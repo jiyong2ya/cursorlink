@@ -19,6 +19,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::config::Config;
+use crate::hotkey::{self, HotkeySpec};
 use crate::input::cursor;
 use crate::net::tcp::{
     self, Frame, MSG_HEARTBEAT, MSG_HELLO, MSG_RETURN_CONTROL, MSG_TAKE_CONTROL,
@@ -53,6 +54,20 @@ pub fn run(cfg: Config) -> Result<()> {
         .name("cursorlink-hb".to_string())
         .spawn(move || heartbeat_loop(tx_for_hb))
         .context("HEARTBEAT 스레드 시작 실패")?;
+
+    // Hotkey + Tray 스레드 (자체 hidden window)
+    let hk_spec = HotkeySpec { toggle: cfg.hotkey_toggle.clone() };
+    if let Err(e) = hotkey::spawn_window_thread(
+        hk_spec,
+        "cursorlink (slave)".to_string(),
+        || {
+            let cur = SHARED.enabled.load(Ordering::Acquire);
+            set_enabled(!cur);
+        },
+        || SHARED.enabled.load(Ordering::Acquire),
+    ) {
+        tracing::warn!("slave: hotkey/tray 스레드 시작 실패, 계속 진행: {}", e);
+    }
 
     // 메인: UDP 수신
     crate::input::inject::run_with_ctx(SlaveCtx { cfg, tcp_tx: tx })

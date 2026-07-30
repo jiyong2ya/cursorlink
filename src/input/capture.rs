@@ -30,6 +30,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Input::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::hotkey::{self, HotkeySpec, HOTKEY_ID_TOGGLE};
 use crate::input::cursor;
 use crate::master::{self, MasterCtx, TcpTx};
 use crate::net::packet::{
@@ -62,6 +63,13 @@ pub fn run_with_ctx(ctx: MasterCtx) -> Result<()> {
     unsafe {
         let hwnd = create_message_window()?;
         register_raw_input(hwnd)?;
+        let hk = HotkeySpec { toggle: ctx.cfg.hotkey_toggle.clone() };
+        if let Err(e) = hotkey::register_toggle(hwnd, &hk) {
+            tracing::warn!("master: hotkey 등록 실패, 계속 진행: {}", e);
+        }
+        if let Err(e) = crate::tray::add(hwnd, "cursorlink (master)") {
+            tracing::warn!("master: 트레이 아이콘 실패, 계속 진행: {}", e);
+        }
         tracing::info!("master: Raw Input 등록 완료");
         message_loop();
     }
@@ -143,7 +151,45 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 handle_raw_input(lparam);
                 LRESULT(0)
             }
+            WM_HOTKEY => {
+                if wparam.0 as i32 == HOTKEY_ID_TOGGLE {
+                    let cur = master::SHARED.enabled.load(std::sync::atomic::Ordering::Acquire);
+                    master::set_enabled(!cur);
+                }
+                LRESULT(0)
+            }
+            m if m == crate::tray::WM_TRAY => {
+                let event = crate::tray::tray_event_from_lparam(lparam);
+                if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
+                    let enabled = master::SHARED.enabled.load(std::sync::atomic::Ordering::Acquire);
+                    crate::tray::show_context_menu(hwnd, enabled);
+                }
+                LRESULT(0)
+            }
+            WM_COMMAND => {
+                match crate::tray::menu_id_from_wparam(wparam) {
+                    crate::tray::MENU_TOGGLE => {
+                        let cur = master::SHARED.enabled.load(std::sync::atomic::Ordering::Acquire);
+                        master::set_enabled(!cur);
+                    }
+                    crate::tray::MENU_SETTINGS => {
+                        crate::tray::open_in_editor(&crate::config::Config::config_path());
+                    }
+                    crate::tray::MENU_LOG => {
+                        let mut p = std::env::current_exe().unwrap_or_default();
+                        p.pop(); p.push("cursorlink.log");
+                        crate::tray::open_in_editor(&p);
+                    }
+                    crate::tray::MENU_EXIT => {
+                        crate::tray::remove(hwnd);
+                        std::process::exit(0);
+                    }
+                    _ => {}
+                }
+                LRESULT(0)
+            }
             WM_DESTROY => {
+                crate::tray::remove(hwnd);
                 PostQuitMessage(0);
                 LRESULT(0)
             }

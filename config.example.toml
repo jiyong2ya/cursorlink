@@ -13,3 +13,11 @@ tcp_port = 46012
 
 # 사전 공유 키 (양쪽 동일하게 설정, 최소 16자)
 shared_secret = "change-me-to-random-string"
+
+# 기능 on/off 단축키
+# 지원 modifier: ctrl, alt, shift, win
+# 지원 키: a-z, 0-9, f1-f12, space, enter, tab, esc, home, end, pgup, pgdn, ins, del, 방향키
+hotkey_toggle = "ctrl+alt+shift+k"
+
+# Windows 시작 시 자동 실행 (레지스트리 HKCU\Run 사용)
+autostart = false

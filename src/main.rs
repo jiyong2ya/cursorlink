@@ -13,6 +13,12 @@ mod input;
 mod master;
 #[cfg(windows)]
 mod slave;
+#[cfg(windows)]
+mod hotkey;
+#[cfg(windows)]
+mod autostart;
+#[cfg(windows)]
+mod tray;
 
 use anyhow::{Context, Result};
 use config::{Config, Mode};
@@ -20,11 +26,23 @@ use config::{Config, Mode};
 fn main() -> Result<()> {
     logging::init().context("로깅 초기화 실패")?;
 
-    let cfg = Config::load_or_default("config.toml")?;
+    let cfg = Config::load_or_default(Config::config_path())?;
     tracing::info!(
         "cursorlink 시작 mode={:?} peer={}:{} tcp={}",
         cfg.mode, cfg.peer_ip, cfg.udp_port, cfg.tcp_port
     );
+
+    // 자동시작 동기화 (config.autostart 에 맞춰 레지스트리 업데이트)
+    #[cfg(windows)]
+    {
+        let want = cfg.autostart;
+        let is  = autostart::is_enabled();
+        if want && !is {
+            if let Err(e) = autostart::enable() { tracing::warn!("autostart 활성화 실패: {}", e); }
+        } else if !want && is {
+            if let Err(e) = autostart::disable() { tracing::warn!("autostart 비활성화 실패: {}", e); }
+        }
+    }
 
     let r = match cfg.mode {
         Mode::Master => run_master(cfg),

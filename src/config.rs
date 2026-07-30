@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -19,7 +19,13 @@ pub struct Config {
     pub tcp_port: u16,
     #[serde(default = "default_secret")]
     pub shared_secret: String,
+    #[serde(default = "default_hotkey")]
+    pub hotkey_toggle: String,
+    #[serde(default)]
+    pub autostart: bool,
 }
+
+fn default_hotkey() -> String { "ctrl+alt+shift+k".to_string() }
 
 fn default_udp_port() -> u16 { 46011 }
 fn default_tcp_port() -> u16 { 46012 }
@@ -28,16 +34,81 @@ fn default_secret() -> String { "change-me-to-random-string".to_string() }
 impl Config {
     pub fn load_or_default(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
+
+        // 첫 실행: config.toml 이 없으면 example 을 복사하고 notepad 로 열어줌.
         if !path.exists() {
-            anyhow::bail!(
-                "설정 파일이 없습니다: {}\nconfig.example.toml 을 config.toml 로 복사해서 편집하세요.",
-                path.display()
-            );
+            first_run_setup(path)?;
         }
+
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("설정 파일 읽기 실패: {}", path.display()))?;
         let cfg: Self = toml::from_str(&text)
             .with_context(|| format!("설정 파일 파싱 실패: {}", path.display()))?;
         Ok(cfg)
     }
+
+    pub fn config_path() -> PathBuf {
+        // exe 옆의 config.toml
+        let mut p = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+        p.pop();
+        p.push("config.toml");
+        p
+    }
+}
+
+/// 첫 실행 처리:
+///   - config.example.toml 이 exe 옆에 있으면 config.toml 로 복사
+///   - notepad 로 열어서 사용자가 편집할 수 있게 하고, 사용자에게 알림
+///   - 이 함수가 끝나도 config.toml 이 없으면 에러 반환 (사용자가 notepad 를 그냥 닫은 경우)
+fn first_run_setup(path: &Path) -> Result<()> {
+    let example = {
+        let mut p = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+        p.pop();
+        p.push("config.example.toml");
+        p
+    };
+
+    if example.exists() {
+        std::fs::copy(&example, path)
+            .with_context(|| format!("config.example.toml 복사 실패"))?;
+        tracing::info!("첫 실행: {} 를 {} 로 복사했습니다", example.display(), path.display());
+    } else {
+        // example 이 없으면 최소 기본값을 씀
+        let default = r#"mode = "master"
+peer_ip = "192.168.0.20"
+udp_port = 46011
+tcp_port = 46012
+shared_secret = "change-me-to-random-string"
+hotkey_toggle = "ctrl+alt+shift+k"
+autostart = false
+"#;
+        std::fs::write(path, default)
+            .with_context(|| format!("기본 config 작성 실패"))?;
+        tracing::info!("첫 실행: 기본 {} 생성", path.display());
+    }
+
+    // notepad 로 열기 + 사용자 안내 (Windows 만 유효)
+    #[cfg(windows)]
+    {
+        use windows::core::PCWSTR;
+        use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_OK, MB_ICONINFORMATION};
+
+        let msg = format!(
+            "cursorlink 이 처음 실행됩니다.\n\n\
+             {} 를 편집해서 mode(master/slave)와 peer_ip 를 설정한 뒤,\n\
+             파일을 저장하고 이 알림을 확인하시면 프로그램이 계속 실행됩니다.",
+            path.display()
+        );
+        let title_w: Vec<u16> = "cursorlink\0".encode_utf16().collect();
+        let msg_w: Vec<u16> = msg.encode_utf16().chain(Some(0)).collect();
+
+        // 편집기 실행 (비동기)
+        let _ = std::process::Command::new("notepad.exe").arg(path).spawn();
+        // 사용자가 편집 후 OK 누르면 진행
+        unsafe {
+            MessageBoxW(None, PCWSTR(msg_w.as_ptr()), PCWSTR(title_w.as_ptr()), MB_OK | MB_ICONINFORMATION);
+        }
+    }
+
+    Ok(())
 }
