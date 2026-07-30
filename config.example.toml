@@ -1,0 +1,15 @@
+# cursorlink 설정 예시
+# 이 파일을 config.toml 로 복사해서 사용
+
+# 역할: "master" 또는 "slave"
+mode = "master"
+
+# 상대 PC 의 IP (master 는 slave 주소, slave 는 master 주소)
+peer_ip = "192.168.0.20"
+
+# UDP 입력 포트 / TCP 제어 포트 (양쪽 동일)
+udp_port = 46011
+tcp_port = 46012
+
+# 사전 공유 키 (양쪽 동일하게 설정, 최소 16자)
+shared_secret = "change-me-to-random-string"
