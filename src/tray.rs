@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM, POINT};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM, POINT};
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -33,7 +33,7 @@ pub fn add(hwnd: HWND, tooltip: &str) -> Result<()> {
         nid.uCallbackMessage = WM_TRAY;
 
         // 시스템 기본 앱 아이콘 사용 (본격 배포 시 자체 .ico 로 교체)
-        nid.hIcon = LoadIconW(None, IDI_APPLICATION).unwrap_or_default();
+        nid.hIcon = LoadIconW(HINSTANCE::default(), IDI_APPLICATION).unwrap_or_default();
 
         // 툴팁 (최대 127자, wide)
         let tip: Vec<u16> = tooltip.encode_utf16().take(127).chain(Some(0)).collect();

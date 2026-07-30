@@ -38,19 +38,19 @@ pub fn disable() -> Result<()> {
 }
 
 pub fn is_enabled() -> bool {
-    // 조용히 시도.
     unsafe {
         let key = match open_run_key(false) { Ok(k) => k, Err(_) => return false };
         let name_w: Vec<u16> = VALUE_NAME.encode_utf16().chain(Some(0)).collect();
         let mut typ: REG_VALUE_TYPE = REG_VALUE_TYPE(0);
         let mut sz: u32 = 0;
+        // windows 0.58: 마지막 세 인자는 raw pointer Option 이라 명시적 캐스트 필요.
         let r = RegQueryValueExW(
             key,
             PCWSTR(name_w.as_ptr()),
             None,
-            Some(&mut typ),
+            Some(&mut typ as *mut REG_VALUE_TYPE),
             None,
-            Some(&mut sz),
+            Some(&mut sz as *mut u32),
         );
         let _ = RegCloseKey(key);
         r == ERROR_SUCCESS

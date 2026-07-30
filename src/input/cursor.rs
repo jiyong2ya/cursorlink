@@ -54,7 +54,8 @@ pub fn clip(r: Option<Rect>) {
         match r {
             Some(r) => {
                 let rect = RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
-                let _ = ClipCursor(Some(&rect));
+                // windows 0.58: ClipCursor 인자는 Option<*const RECT>
+                let _ = ClipCursor(Some(&rect as *const RECT));
             }
             None => {
                 let _ = ClipCursor(None);
