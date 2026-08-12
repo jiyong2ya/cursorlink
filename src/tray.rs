@@ -11,6 +11,7 @@
 use anyhow::Result;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM, POINT};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -32,8 +33,12 @@ pub fn add(hwnd: HWND, tooltip: &str) -> Result<()> {
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAY;
 
-        // 시스템 기본 앱 아이콘 사용 (본격 배포 시 자체 .ico 로 교체)
-        nid.hIcon = LoadIconW(HINSTANCE::default(), IDI_APPLICATION).unwrap_or_default();
+        // 자체 임베드 아이콘 (build.rs 로 embed) 로드. 실패 시 시스템 기본 아이콘 fallback.
+        let hmod = GetModuleHandleW(PCWSTR::null()).unwrap_or_default();
+        let hinst = HINSTANCE(hmod.0);
+        nid.hIcon = LoadIconW(hinst, PCWSTR(1 as *const u16))
+            .or_else(|_| LoadIconW(HINSTANCE::default(), IDI_APPLICATION))
+            .unwrap_or_default();
 
         // 툴팁 (최대 127자, wide)
         let tip: Vec<u16> = tooltip.encode_utf16().take(127).chain(Some(0)).collect();

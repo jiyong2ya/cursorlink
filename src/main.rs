@@ -26,6 +26,14 @@ use config::{Config, Mode};
 fn main() -> Result<()> {
     logging::init().context("로깅 초기화 실패")?;
 
+    // DPI 스케일링 환경에서도 물리 픽셀 기준 좌표를 얻기 위해 per-monitor DPI awareness 설정.
+    // Mirror 모드의 % 계산과 커서 위치 sync 정확도에 필수.
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+
     let cfg = Config::load_or_default(Config::config_path())?;
     tracing::info!(
         "cursorlink 시작 mode={:?} peer={}:{} tcp={}",
