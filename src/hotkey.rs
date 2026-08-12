@@ -16,15 +16,19 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 pub const HOTKEY_ID_TOGGLE: i32 = 1;
+pub const HOTKEY_ID_MIRROR: i32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeySpec {
     #[serde(default = "default_hotkey")]
     pub toggle: String,
+    /// Mirror 모드 토글 단축키. 빈 문자열이면 Mirror 기능 비활성.
+    #[serde(default)]
+    pub mirror: String,
 }
 
 impl Default for HotkeySpec {
-    fn default() -> Self { Self { toggle: default_hotkey() } }
+    fn default() -> Self { Self { toggle: default_hotkey(), mirror: String::new() } }
 }
 
 fn default_hotkey() -> String { "ctrl+alt+shift+k".to_string() }
@@ -35,7 +39,20 @@ pub fn register_toggle(hwnd: HWND, spec: &HotkeySpec) -> Result<()> {
         RegisterHotKey(hwnd, HOTKEY_ID_TOGGLE, mods, vk as u32)
             .map_err(|e| anyhow::anyhow!("RegisterHotKey 실패 ({}): {}", spec.toggle, e))?;
     }
-    tracing::info!("전역 단축키 등록: {}", spec.toggle);
+    tracing::info!("전역 단축키 등록 (toggle): {}", spec.toggle);
+    Ok(())
+}
+
+pub fn register_mirror(hwnd: HWND, spec: &HotkeySpec) -> Result<()> {
+    if spec.mirror.trim().is_empty() {
+        return Ok(());
+    }
+    let (mods, vk) = parse_hotkey(&spec.mirror)?;
+    unsafe {
+        RegisterHotKey(hwnd, HOTKEY_ID_MIRROR, mods, vk as u32)
+            .map_err(|e| anyhow::anyhow!("RegisterHotKey mirror 실패 ({}): {}", spec.mirror, e))?;
+    }
+    tracing::info!("전역 단축키 등록 (mirror): {}", spec.mirror);
     Ok(())
 }
 
@@ -237,6 +254,22 @@ fn parse_vk(s: &str) -> Result<u16> {
         "right"    => VK_RIGHT.0,
         "up"       => VK_UP.0,
         "down"     => VK_DOWN.0,
+        // 넘버패드 키
+        "num0" | "numpad0" => VK_NUMPAD0.0,
+        "num1" | "numpad1" => VK_NUMPAD1.0,
+        "num2" | "numpad2" => VK_NUMPAD2.0,
+        "num3" | "numpad3" => VK_NUMPAD3.0,
+        "num4" | "numpad4" => VK_NUMPAD4.0,
+        "num5" | "numpad5" => VK_NUMPAD5.0,
+        "num6" | "numpad6" => VK_NUMPAD6.0,
+        "num7" | "numpad7" => VK_NUMPAD7.0,
+        "num8" | "numpad8" => VK_NUMPAD8.0,
+        "num9" | "numpad9" => VK_NUMPAD9.0,
+        "num*" | "nummul" | "multiply" | "numpad_multiply" => VK_MULTIPLY.0,
+        "num-" | "numsub" | "subtract" | "numpad_subtract" => VK_SUBTRACT.0,
+        "num/" | "numdiv" | "divide"   | "numpad_divide"   => VK_DIVIDE.0,
+        "num." | "numdot" | "decimal"  | "numpad_decimal"  => VK_DECIMAL.0,
+        "numplus" | "add"      | "numpad_add"      => VK_ADD.0,
         _ => return Err(anyhow::anyhow!("알 수 없는 키: {}", s)),
     };
     Ok(vk)

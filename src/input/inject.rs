@@ -11,9 +11,13 @@
 //     - KeyEvent    : Active 상태일 때만 SendInput (scan code)
 
 use anyhow::Result;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
+
+// SendInput 의 MOUSEINPUT.mouseData 에서 X 버튼 구분에 쓰는 값 (WinUser.h).
+const XBUTTON1: u32 = 0x0001;
+const XBUTTON2: u32 = 0x0002;
 
 use crate::input::cursor;
 use crate::net::packet::{
@@ -25,6 +29,9 @@ use crate::slave::{self, SlaveCtx, TcpTx};
 use crate::state::SlaveState;
 
 static LAST_SEQ: AtomicU32 = AtomicU32::new(0);
+
+/// 왼쪽 엣지 크로싱 검출용 이전 X 좌표. i32::MIN 은 "아직 초기화 안 됨" 센티넬.
+static PREV_INJECT_X: AtomicI32 = AtomicI32::new(i32::MIN);
 
 pub fn run_with_ctx(ctx: SlaveCtx) -> Result<()> {
     unsafe { boost_priority(); }
@@ -94,8 +101,19 @@ fn handle_packet(p: Packet, tx: &TcpTx) {
         Kind::MouseButton => inject_button(p.button, (p.flags & FLAG_BTN_DOWN) != 0),
         Kind::MouseWheel  => inject_wheel(p.wheel_dx as i32, p.wheel_dy as i32),
         Kind::KeyEvent    => inject_key(p.button, (p.flags & FLAG_BTN_DOWN) != 0, (p.flags & FLAG_KEY_EXT) != 0),
+        Kind::MousePos    => inject_mouse_pos(p.dx as u16, p.dy as u16),
         Kind::Heartbeat   => {}
     }
+}
+
+/// Mirror 모드: Master 화면의 x_ppm, y_ppm (0..10000) 을 Slave 화면 절대 위치로 변환해 이동.
+fn inject_mouse_pos(x_ppm: u16, y_ppm: u16) {
+    let scr = cursor::primary_screen();
+    let x_ppm = x_ppm.min(10000) as i64;
+    let y_ppm = y_ppm.min(10000) as i64;
+    let x = scr.left + (x_ppm * scr.width() as i64 / 10000) as i32;
+    let y = scr.top  + (y_ppm * scr.height() as i64 / 10000) as i32;
+    cursor::set_pos(x, y);
 }
 
 fn inject_move(dx: i32, dy: i32) {
@@ -103,11 +121,15 @@ fn inject_move(dx: i32, dy: i32) {
     cursor::set_pos(pt.x + dx, pt.y + dy);
 }
 
-/// 왼쪽 엣지 도달 시 RETURN_CONTROL 전송.
+/// 왼쪽 엣지 크로싱 (안쪽에서 → 왼쪽 끝으로) 시 RETURN_CONTROL 전송.
+/// 크로싱 검출: 이전 X 좌표가 edge 초과였고, 지금 X 가 edge 이하이면 실제 왼쪽 진입.
 fn check_edge_and_return(tx: &TcpTx) {
     let pt = match cursor::get_pos() { Some(p) => p, None => return };
     let scr = cursor::primary_screen();
-    if pt.x <= scr.left {
+    let edge = scr.left;
+    let prev = PREV_INJECT_X.swap(pt.x, Ordering::AcqRel);
+    if prev == i32::MIN { return; }  // baseline only, first call
+    if prev > edge && pt.x <= edge {
         slave::return_control(tx);
     }
 }
@@ -127,8 +149,8 @@ fn inject_button(button: u16, down: bool) {
         _ => return,
     };
     let mouse_data: u32 = match button {
-        MB_X1 => XBUTTON1 as u32,
-        MB_X2 => XBUTTON2 as u32,
+        MB_X1 => XBUTTON1,
+        MB_X2 => XBUTTON2,
         _ => 0,
     };
 

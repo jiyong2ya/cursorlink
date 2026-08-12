@@ -47,6 +47,8 @@ pub struct MasterShared {
     state: AtomicU8,
     /// 사용자가 단축키로 켜고 끔. false 면 어떤 상태 전환도 안 함.
     pub enabled: AtomicBool,
+    /// Mirror 모드: 마스터/슬레이브 양쪽 동시 조작. Local 상태에서만 켜짐.
+    pub mirror: AtomicBool,
 }
 
 impl MasterShared {
@@ -54,6 +56,7 @@ impl MasterShared {
         Self {
             state: AtomicU8::new(MasterState::Disconnected as u8),
             enabled: AtomicBool::new(true),
+            mirror: AtomicBool::new(false),
         }
     }
     pub fn get(&self) -> MasterState {

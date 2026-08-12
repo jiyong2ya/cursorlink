@@ -5,7 +5,7 @@
 mode = "master"
 
 # 상대 PC 의 IP (master 는 slave 주소, slave 는 master 주소)
-peer_ip = "192.168.0.20"
+peer_ip = "172.30.1.48"
 
 # UDP 입력 포트 / TCP 제어 포트 (양쪽 동일)
 udp_port = 46011
@@ -17,7 +17,16 @@ shared_secret = "change-me-to-random-string"
 # 기능 on/off 단축키
 # 지원 modifier: ctrl, alt, shift, win
 # 지원 키: a-z, 0-9, f1-f12, space, enter, tab, esc, home, end, pgup, pgdn, ins, del, 방향키
+#           num0-num9, num* (numpad *), num- num/ num. numplus
 hotkey_toggle = "ctrl+alt+shift+k"
+
+# Mirror 모드 (Master + Slave 양쪽 동시 조작) 단축키.
+# 빈 문자열이면 Mirror 기능 비활성. 예: "num*" 또는 "ctrl+shift+m"
+hotkey_mirror = ""
 
 # Windows 시작 시 자동 실행 (레지스트리 HKCU\Run 사용)
 autostart = false
+
+# Remote 상태에서 키보드도 Slave 로 넘길지 (true) 아니면 마우스만 넘길지 (false).
+# false 로 하면 Slave 는 자체 키보드로 조작. Slave 에 게임 켜져있을 때 유용.
+forward_keyboard = true

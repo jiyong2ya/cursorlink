@@ -38,16 +38,16 @@ pub struct MasterCtx {
 pub fn run(cfg: Config) -> Result<()> {
     let (tx, rx) = bounded::<Frame>(64);
 
-    // TCP worker 스레드
-    let peer: SocketAddr = format!("{}:{}", cfg.peer_ip, cfg.tcp_port).parse()
-        .with_context(|| format!("TCP peer 주소 파싱 실패: {}:{}", cfg.peer_ip, cfg.tcp_port))?;
+    // TCP worker 스레드. peer_ip 는 IP 또는 hostname (Windows 컴퓨터 이름 포함) 둘 다 지원.
+    // 재접속마다 재해석해서 Slave IP 바뀌어도 자동 대응.
+    let peer_target = format!("{}:{}", cfg.peer_ip, cfg.tcp_port);
     let secret = cfg.shared_secret.clone();
     let rx_clone = rx.clone();
     let tx_for_hb = tx.clone();
 
     thread::Builder::new()
         .name("cursorlink-tcp".to_string())
-        .spawn(move || tcp_worker_loop(peer, secret, rx_clone))
+        .spawn(move || tcp_worker_loop(peer_target, secret, rx_clone))
         .context("TCP worker 스레드 시작 실패")?;
 
     // HEARTBEAT ticker
@@ -60,10 +60,29 @@ pub fn run(cfg: Config) -> Result<()> {
     crate::input::capture::run_with_ctx(MasterCtx { cfg, tcp_tx: tx })
 }
 
-fn tcp_worker_loop(peer: SocketAddr, secret: String, rx: crossbeam_channel::Receiver<Frame>) {
+fn tcp_worker_loop(peer_target: String, secret: String, rx: crossbeam_channel::Receiver<Frame>) {
+    use std::net::ToSocketAddrs;
     loop {
         SHARED.set(MasterState::Disconnected);
-        tracing::info!("master: TCP {} 로 연결 시도", peer);
+        tracing::info!("master: TCP {} 로 연결 시도", peer_target);
+
+        // hostname 이면 매번 DNS/NetBIOS 해석 (IP 바뀌어도 자동 대응).
+        let peer: SocketAddr = match peer_target.to_socket_addrs() {
+            Ok(mut iter) => match iter.next() {
+                Some(a) => a,
+                None => {
+                    tracing::warn!("master: peer 주소 해석 결과 없음: {}", peer_target);
+                    thread::sleep(Duration::from_secs(3));
+                    continue;
+                }
+            },
+            Err(e) => {
+                tracing::warn!("master: peer 주소 해석 실패 ({}): {}", peer_target, e);
+                thread::sleep(Duration::from_secs(3));
+                continue;
+            }
+        };
+
         match tcp::connect(peer) {
             Ok(mut sock) => {
                 // HELLO 전송 + 확인 (slave 가 응답 없이 그냥 놔둬도 됨, 여기선 편의상 즉시 Local 전환)
@@ -76,6 +95,16 @@ fn tcp_worker_loop(peer: SocketAddr, secret: String, rx: crossbeam_channel::Rece
                 tracing::info!("master: TCP 연결 성공, Local 상태");
                 run_connected(&mut sock, &rx);
                 tracing::warn!("master: TCP 연결 해제됨, 재시도 예정");
+                // Remote 상태였으면 커서 락/숨김이 걸려있음. 반드시 해제하지 않으면 마우스 얼어붙음.
+                if SHARED.get() == MasterState::Remote {
+                    crate::input::cursor::unlock();
+                    crate::input::cursor::show();
+                    tracing::info!("master: TCP 끊김으로 인한 Remote → Local 강제 복귀");
+                }
+                // Mirror 도 자동 off (Slave 와 연결 끊겼으니)
+                if SHARED.mirror.load(Ordering::Acquire) {
+                    toggle_mirror_off_internal();
+                }
             }
             Err(e) => {
                 tracing::debug!("master: TCP 연결 실패: {}", e);
@@ -103,9 +132,13 @@ fn run_connected(sock: &mut TcpStream, rx: &crossbeam_channel::Receiver<Frame>) 
     };
 
     // reader 루프
+    // read timeout (tcp::configure_stream 에서 6초로 설정됨) 은 주기적 wake-up 용도.
+    // WouldBlock/TimedOut 은 정상 idle 상태이므로 continue. 진짜 연결 문제만 break.
     loop {
         match tcp::read_frame(sock) {
             Ok(f) => handle_incoming(f),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+                   || e.kind() == std::io::ErrorKind::TimedOut => continue,
             Err(e) => {
                 tracing::warn!("master: TCP read 오류: {}", e);
                 break;
@@ -192,10 +225,48 @@ pub fn return_to_local() {
 }
 
 /// 단축키로 기능 완전 off. Remote 였다면 즉시 Local 복귀.
-pub fn set_enabled(en: bool) {
+/// tcp_tx 가 있으면 Mirror OFF 시 RETURN_CONTROL 도 Slave 에 전송.
+pub fn set_enabled(en: bool, tcp_tx: Option<&TcpTx>) {
     let prev = SHARED.enabled.swap(en, Ordering::AcqRel);
     if prev && !en && SHARED.get() == MasterState::Remote {
         return_to_local();
     }
+    // 비활성화 시 Mirror 도 자동 off + Slave 에 RETURN_CONTROL 전송
+    if !en && SHARED.mirror.load(Ordering::Acquire) {
+        if let Some(tx) = tcp_tx {
+            let _ = tx.try_send(Frame::new(MSG_RETURN_CONTROL));
+        }
+        toggle_mirror_off_internal();
+    }
     tracing::info!("master: enabled={}", en);
+}
+
+/// Mirror 모드 토글. Local 상태에서만 켜짐.
+/// - on: Slave 를 Active 상태로 만들기 위해 TAKE_CONTROL 전송, 커서 락은 하지 않음.
+/// - off: RETURN_CONTROL 전송, Slave 를 Idle 로 되돌림.
+pub fn toggle_mirror(tx: &TcpTx) {
+    if !SHARED.enabled.load(Ordering::Acquire) {
+        tracing::debug!("master: enabled=false 라 mirror 토글 무시");
+        return;
+    }
+    let now = SHARED.mirror.load(Ordering::Acquire);
+    if !now {
+        // 켜기: Local 상태에서만
+        if SHARED.get() != MasterState::Local {
+            tracing::warn!("master: Local 상태 아니라 mirror 켤 수 없음");
+            return;
+        }
+        let _ = tx.try_send(Frame::take_control(tcp::SIDE_LEFT, 50));
+        SHARED.mirror.store(true, Ordering::Release);
+        tracing::info!("master: Mirror ON");
+    } else {
+        toggle_mirror_off_internal();
+        let _ = tx.try_send(Frame::new(MSG_RETURN_CONTROL));
+    }
+}
+
+/// Mirror off 처리 (TCP 전송 없이 상태만).
+fn toggle_mirror_off_internal() {
+    SHARED.mirror.store(false, Ordering::Release);
+    tracing::info!("master: Mirror OFF");
 }

@@ -37,6 +37,7 @@ use crate::net::packet::{
     Kind, Packet, FLAG_BTN_DOWN, FLAG_KEY_EXT,
     MB_LEFT, MB_MIDDLE, MB_RIGHT, MB_X1, MB_X2,
 };
+use crate::hotkey::HOTKEY_ID_MIRROR;
 use crate::net::udp;
 use crate::state::MasterState;
 
@@ -46,6 +47,9 @@ static SEQ: AtomicU32 = AtomicU32::new(1);
 static mut G_SEND_SOCK: Option<std::net::UdpSocket> = None;
 static mut G_EPOCH: Option<Instant> = None;
 static mut G_TCP_TX: Option<TcpTx> = None;
+
+/// 엣지 크로싱 검출용 이전 X 좌표. i32::MIN 은 "아직 초기화 안 됨" 센티넬.
+static PREV_EDGE_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(i32::MIN);
 
 pub fn run_with_ctx(ctx: MasterCtx) -> Result<()> {
     unsafe { boost_priority(); }
@@ -58,20 +62,40 @@ pub fn run_with_ctx(ctx: MasterCtx) -> Result<()> {
         G_EPOCH = Some(Instant::now());
         G_TCP_TX = Some(ctx.tcp_tx);
     }
+    crate::input::hooks::FORWARD_KEYBOARD.store(ctx.cfg.forward_keyboard, Ordering::Release);
+
+    // 크로싱 검출용 이전 X 좌표를 현재 커서 위치로 초기화.
+    // 이렇게 안 하면 사용자가 우측 끝까지 한 이벤트에 도달 시 그게 baseline 으로 흡수돼서
+    // 이후 어떤 이동에도 트리거 안 되는 UX 후퇴가 발생.
+    if let Some(pt) = cursor::get_pos() {
+        PREV_EDGE_X.store(pt.x, Ordering::Release);
+        tracing::debug!("master: crossing 검출 baseline 초기화 x={}", pt.x);
+    }
     tracing::info!("master: UDP 송신 → {} 준비", peer);
 
     unsafe {
         let hwnd = create_message_window()?;
         register_raw_input(hwnd)?;
-        let hk = HotkeySpec { toggle: ctx.cfg.hotkey_toggle.clone() };
+        let hk = HotkeySpec {
+            toggle: ctx.cfg.hotkey_toggle.clone(),
+            mirror: ctx.cfg.hotkey_mirror.clone(),
+        };
         if let Err(e) = hotkey::register_toggle(hwnd, &hk) {
             tracing::warn!("master: hotkey 등록 실패, 계속 진행: {}", e);
+        }
+        if let Err(e) = hotkey::register_mirror(hwnd, &hk) {
+            tracing::warn!("master: mirror hotkey 등록 실패, 계속 진행: {}", e);
         }
         if let Err(e) = crate::tray::add(hwnd, "cursorlink (master)") {
             tracing::warn!("master: 트레이 아이콘 실패, 계속 진행: {}", e);
         }
+        // Remote 상태일 때 Master 입력을 소비할 저수준 훅 등록.
+        if let Err(e) = crate::input::hooks::install() {
+            tracing::warn!("master: 저수준 훅 등록 실패, 이중 입력 발생 가능: {}", e);
+        }
         tracing::info!("master: Raw Input 등록 완료");
         message_loop();
+        crate::input::hooks::uninstall();
     }
     Ok(())
 }
@@ -152,9 +176,14 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 LRESULT(0)
             }
             WM_HOTKEY => {
-                if wparam.0 as i32 == HOTKEY_ID_TOGGLE {
+                let id = wparam.0 as i32;
+                if id == HOTKEY_ID_TOGGLE {
                     let cur = master::SHARED.enabled.load(std::sync::atomic::Ordering::Acquire);
-                    master::set_enabled(!cur);
+                    master::set_enabled(!cur, G_TCP_TX.as_ref());
+                } else if id == HOTKEY_ID_MIRROR {
+                    if let Some(tx) = &G_TCP_TX {
+                        master::toggle_mirror(tx);
+                    }
                 }
                 LRESULT(0)
             }
@@ -170,7 +199,7 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 match crate::tray::menu_id_from_wparam(wparam) {
                     crate::tray::MENU_TOGGLE => {
                         let cur = master::SHARED.enabled.load(std::sync::atomic::Ordering::Acquire);
-                        master::set_enabled(!cur);
+                        master::set_enabled(!cur, G_TCP_TX.as_ref());
                     }
                     crate::tray::MENU_SETTINGS => {
                         crate::tray::open_in_editor(&crate::config::Config::config_path());
@@ -214,10 +243,10 @@ unsafe fn handle_raw_input(lparam: LPARAM) {
     if got == u32::MAX || got == 0 { return; }
 
     let ri = &*(buf.as_ptr() as *const RAWINPUT);
-    // dwType 는 u32 raw. RIM_TYPEMOUSE/RIM_TYPEKEYBOARD 는 u32 상수 (0/1).
-    if ri.header.dwType == RIM_TYPEMOUSE {
+    // windows-rs 0.58: RIM_TYPEMOUSE/RIM_TYPEKEYBOARD 는 RID_DEVICE_INFO_TYPE(u32) wrapper.
+    if ri.header.dwType == RIM_TYPEMOUSE.0 {
         handle_mouse(&ri.data.mouse);
-    } else if ri.header.dwType == RIM_TYPEKEYBOARD {
+    } else if ri.header.dwType == RIM_TYPEKEYBOARD.0 {
         handle_keyboard(&ri.data.keyboard);
     }
 }
@@ -229,18 +258,32 @@ unsafe fn handle_mouse(m: &RAWMOUSE) {
 
     let dx = m.lLastX;
     let dy = m.lLastY;
-    // RAWMOUSE.usFlags 는 windows 0.58 에서 u16 raw. MOUSE_MOVE_ABSOLUTE 도 u16 상수.
-    let is_relative = (m.usFlags & MOUSE_MOVE_ABSOLUTE) == 0;
+    // windows-rs 0.58: usFlags 는 MOUSE_STATE(u16), MOUSE_MOVE_ABSOLUTE 도 동일 wrapper.
+    let is_relative = (m.usFlags.0 & MOUSE_MOVE_ABSOLUTE.0) == 0;
 
     // usButtonFlags: u16 (RI_MOUSE_BUTTON_* 비트 or), usButtonData: u16 (실은 signed short)
     let btn_flags: u16 = m.Anonymous.Anonymous.usButtonFlags;
     let button_data: i16 = m.Anonymous.Anonymous.usButtonData as i16;
 
+    let mirror = master::SHARED.mirror.load(Ordering::Acquire);
+
     match state {
         MasterState::Local => {
-            // Local 상태에서는 델타 전송 X. 대신 엣지 감지만.
-            if is_relative && (dx != 0 || dy != 0) {
-                check_edge_and_transfer();
+            if mirror {
+                // Mirror 모드: 현재 커서 위치를 % 로 Slave 에 전송 (커서 락 X).
+                // 이동만 있든, 버튼/휠만 있든, 이벤트 발생 시 반드시 위치 sync 먼저 → 그 다음 액션.
+                // (Raw Input 이 버튼/휠을 dx=dy=0 인 별도 이벤트로 전달하므로 델타 체크만으론 부족.)
+                let has_motion = is_relative && (dx != 0 || dy != 0);
+                let has_action = btn_flags != 0;
+                if has_motion || has_action {
+                    send_mouse_pos_from_current();
+                }
+                forward_buttons_and_wheel(btn_flags, button_data);
+            } else {
+                // 일반 Local: 엣지 감지 (안쪽 → 우측 끝 크로싱 시에만 트리거).
+                if is_relative && (dx != 0 || dy != 0) {
+                    check_edge_and_transfer();
+                }
             }
         }
         MasterState::Remote => {
@@ -250,31 +293,61 @@ unsafe fn handle_mouse(m: &RAWMOUSE) {
                 let sdy = clamp_i32_to_i16(dy);
                 send_move(sdx, sdy);
             }
-            // 버튼 (RI_MOUSE_* 상수는 u32, 하지만 값은 u16 범위 → as u16 safe)
-            if btn_flags & (RI_MOUSE_BUTTON_1_DOWN as u16) != 0 { send_button(MB_LEFT, true); }
-            if btn_flags & (RI_MOUSE_BUTTON_1_UP   as u16) != 0 { send_button(MB_LEFT, false); }
-            if btn_flags & (RI_MOUSE_BUTTON_2_DOWN as u16) != 0 { send_button(MB_RIGHT, true); }
-            if btn_flags & (RI_MOUSE_BUTTON_2_UP   as u16) != 0 { send_button(MB_RIGHT, false); }
-            if btn_flags & (RI_MOUSE_BUTTON_3_DOWN as u16) != 0 { send_button(MB_MIDDLE, true); }
-            if btn_flags & (RI_MOUSE_BUTTON_3_UP   as u16) != 0 { send_button(MB_MIDDLE, false); }
-            if btn_flags & (RI_MOUSE_BUTTON_4_DOWN as u16) != 0 { send_button(MB_X1, true); }
-            if btn_flags & (RI_MOUSE_BUTTON_4_UP   as u16) != 0 { send_button(MB_X1, false); }
-            if btn_flags & (RI_MOUSE_BUTTON_5_DOWN as u16) != 0 { send_button(MB_X2, true); }
-            if btn_flags & (RI_MOUSE_BUTTON_5_UP   as u16) != 0 { send_button(MB_X2, false); }
-            // 휠
-            if btn_flags & (RI_MOUSE_WHEEL  as u16) != 0 { send_wheel(0, button_data); }
-            if btn_flags & (RI_MOUSE_HWHEEL as u16) != 0 { send_wheel(button_data, 0); }
+            forward_buttons_and_wheel(btn_flags, button_data);
         }
         MasterState::Disconnected => {}
     }
 }
 
-/// Local 상태에서 커서가 오른쪽 끝에 닿았는지 체크. 닿았으면 Remote 로 전환.
-unsafe fn check_edge_and_transfer() {
+unsafe fn forward_buttons_and_wheel(btn_flags: u16, button_data: i16) {
+    if btn_flags & (RI_MOUSE_BUTTON_1_DOWN as u16) != 0 { send_button(MB_LEFT, true); }
+    if btn_flags & (RI_MOUSE_BUTTON_1_UP   as u16) != 0 { send_button(MB_LEFT, false); }
+    if btn_flags & (RI_MOUSE_BUTTON_2_DOWN as u16) != 0 { send_button(MB_RIGHT, true); }
+    if btn_flags & (RI_MOUSE_BUTTON_2_UP   as u16) != 0 { send_button(MB_RIGHT, false); }
+    if btn_flags & (RI_MOUSE_BUTTON_3_DOWN as u16) != 0 { send_button(MB_MIDDLE, true); }
+    if btn_flags & (RI_MOUSE_BUTTON_3_UP   as u16) != 0 { send_button(MB_MIDDLE, false); }
+    if btn_flags & (RI_MOUSE_BUTTON_4_DOWN as u16) != 0 { send_button(MB_X1, true); }
+    if btn_flags & (RI_MOUSE_BUTTON_4_UP   as u16) != 0 { send_button(MB_X1, false); }
+    if btn_flags & (RI_MOUSE_BUTTON_5_DOWN as u16) != 0 { send_button(MB_X2, true); }
+    if btn_flags & (RI_MOUSE_BUTTON_5_UP   as u16) != 0 { send_button(MB_X2, false); }
+    if btn_flags & (RI_MOUSE_WHEEL  as u16) != 0 { send_wheel(0, button_data); }
+    if btn_flags & (RI_MOUSE_HWHEEL as u16) != 0 { send_wheel(button_data, 0); }
+}
+
+/// Mirror 모드에서 현재 커서 위치를 화면 % 로 계산해서 Slave 에 전송.
+fn send_mouse_pos_from_current() {
     let pt = match cursor::get_pos() { Some(p) => p, None => return };
     let scr = cursor::primary_screen();
-    // 오른쪽 끝 임계값: 마지막 픽셀 (right-1). Windows 는 커서를 right-1 까지 허용.
-    if pt.x >= scr.right - 1 {
+    let w = scr.width().max(1) as i64;
+    let h = scr.height().max(1) as i64;
+    let x_ppm = (((pt.x - scr.left) as i64 * 10000) / w).clamp(0, 10000) as i16;
+    let y_ppm = (((pt.y - scr.top)  as i64 * 10000) / h).clamp(0, 10000) as i16;
+    send_packet(Packet {
+        seq: next_seq(), ts_us: now_us(),
+        kind: Kind::MousePos, flags: 0, button: 0,
+        dx: x_ppm, dy: y_ppm, wheel_dx: 0, wheel_dy: 0,
+    });
+}
+
+/// Local 상태에서 커서가 오른쪽 끝을 크로싱 (안쪽에서 → 끝으로 진입) 하면 Remote 로 전환.
+/// 크로싱 검출: 이전 X 좌표가 edge 미만이었고, 지금 X 가 edge 이상이면 트리거.
+/// 이렇게 하면 커서가 처음부터 우측 끝에 앉아있는 상황에서 아무 이동에도 튀는 문제 해결.
+unsafe fn check_edge_and_transfer() {
+    // Mirror 상태면 Remote 로 안 넘어감.
+    if master::SHARED.mirror.load(Ordering::Acquire) { return; }
+    let pt = match cursor::get_pos() { Some(p) => p, None => return };
+    let scr = cursor::primary_screen();
+    let edge = scr.right - 1;
+
+    // 이전 X 좌표를 스왑해서 가져옴 (동시에 새 값으로 갱신).
+    let prev = PREV_EDGE_X.swap(pt.x, Ordering::AcqRel);
+
+    // 첫 호출은 baseline 설정만 하고 트리거 안 함.
+    if prev == i32::MIN { return; }
+
+    // 크로싱: 이전엔 edge 미만이었는데 지금 edge 이상이면 실제 우측 진입임.
+    // 커서가 이미 edge 에 앉아있는 상태에서 rightward 클램프된 이벤트가 계속 와도 무시.
+    if prev < edge && pt.x >= edge {
         let entry_y_pct = if scr.height() > 0 {
             (((pt.y - scr.top) as i64 * 100) / scr.height() as i64).clamp(0, 100) as u8
         } else { 50 };
@@ -289,6 +362,8 @@ unsafe fn handle_keyboard(k: &RAWKEYBOARD) {
     let enabled = master::SHARED.enabled.load(Ordering::Acquire);
     // Remote 상태에서만 키 전달. Local 이면 이 PC 가 정상 처리.
     if !enabled || state != MasterState::Remote { return; }
+    // config 로 키보드 전송 끌 수 있음. false 면 Slave 는 자체 키보드로 조작.
+    if !crate::input::hooks::FORWARD_KEYBOARD.load(Ordering::Acquire) { return; }
 
     // 눌림/떼짐 : Message == WM_KEYDOWN/WM_SYSKEYDOWN 이면 down.
     let is_key_up = (k.Flags & RI_KEY_BREAK as u16) != 0;
@@ -359,14 +434,24 @@ fn send_wheel(hx: i16, vy: i16) {
     });
 }
 
-fn send_key(scan: u16, down: bool, ext: bool) {
+pub fn send_key(scan: u16, down: bool, ext: bool) {
     let mut flags = 0u8;
     if down { flags |= FLAG_BTN_DOWN; }
     if ext  { flags |= FLAG_KEY_EXT; }
-    send_packet(Packet {
+
+    let make_packet = || Packet {
         seq: next_seq(), ts_us: now_us(),
         kind: Kind::KeyEvent, flags,
-        button: scan, // button 필드에 scan code
+        button: scan,
         dx: 0, dy: 0, wheel_dx: 0, wheel_dy: 0,
-    });
+    };
+
+    // 키-다운은 1회, 키-업은 3회 전송 (UDP 손실 방어).
+    // 키-업 손실 시 modifier 가 stuck 되어 이후 입력이 어긋나는 문제 방지.
+    // SendInput 의 key-up 은 이미 떨어진 키에 대해 idempotent (재적용해도 부작용 없음).
+    send_packet(make_packet());
+    if !down {
+        send_packet(make_packet());
+        send_packet(make_packet());
+    }
 }

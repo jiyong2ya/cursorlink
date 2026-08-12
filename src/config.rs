@@ -21,11 +21,20 @@ pub struct Config {
     pub shared_secret: String,
     #[serde(default = "default_hotkey")]
     pub hotkey_toggle: String,
+    /// Mirror 모드 (Master + Slave 동시 조작) 토글 단축키.
+    /// 빈 문자열이면 Mirror 기능 비활성.
+    #[serde(default)]
+    pub hotkey_mirror: String,
     #[serde(default)]
     pub autostart: bool,
+    /// Remote 상태에서 키보드 입력을 Slave 로 전송할지.
+    /// false 면 마우스만 넘기고 키보드는 각 PC 가 각자 처리 (Slave 에 게임 켜져있을 때 유용).
+    #[serde(default = "default_forward_keyboard")]
+    pub forward_keyboard: bool,
 }
 
 fn default_hotkey() -> String { "ctrl+alt+shift+k".to_string() }
+fn default_forward_keyboard() -> bool { true }
 
 fn default_udp_port() -> u16 { 46011 }
 fn default_tcp_port() -> u16 { 46012 }

@@ -24,6 +24,10 @@ pub enum Kind {
     MouseWheel = 2,
     KeyEvent = 3,
     Heartbeat = 4,
+    /// Mirror 모드용 절대 위치 sync.
+    /// dx = x_ppm (0..10000, 화면 폭의 0.01% 단위)
+    /// dy = y_ppm (0..10000, 화면 높이의 0.01% 단위)
+    MousePos = 5,
 }
 
 impl Kind {
@@ -34,6 +38,7 @@ impl Kind {
             2 => Self::MouseWheel,
             3 => Self::KeyEvent,
             4 => Self::Heartbeat,
+            5 => Self::MousePos,
             _ => return None,
         })
     }
