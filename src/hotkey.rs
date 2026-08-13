@@ -17,6 +17,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 pub const HOTKEY_ID_TOGGLE: i32 = 1;
 pub const HOTKEY_ID_MIRROR: i32 = 2;
+pub const HOTKEY_ID_TRANSFER: i32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeySpec {
@@ -25,10 +26,21 @@ pub struct HotkeySpec {
     /// Mirror 모드 토글 단축키. 빈 문자열이면 Mirror 기능 비활성.
     #[serde(default)]
     pub mirror: String,
+    /// Local → Remote 즉시 전환 (Slave 커서는 화면 중앙).
+    #[serde(default)]
+    pub transfer: String,
+    /// Remote → Local 복귀. LL 훅 안에서 감지되므로 RegisterHotKey 대신 VK 를 그대로 파싱해서 씀.
+    #[serde(default)]
+    pub return_hotkey: String,
 }
 
 impl Default for HotkeySpec {
-    fn default() -> Self { Self { toggle: default_hotkey(), mirror: String::new() } }
+    fn default() -> Self { Self {
+        toggle: default_hotkey(),
+        mirror: String::new(),
+        transfer: String::new(),
+        return_hotkey: String::new(),
+    } }
 }
 
 fn default_hotkey() -> String { "ctrl+alt+shift+k".to_string() }
@@ -54,6 +66,34 @@ pub fn register_mirror(hwnd: HWND, spec: &HotkeySpec) -> Result<()> {
     }
     tracing::info!("전역 단축키 등록 (mirror): {}", spec.mirror);
     Ok(())
+}
+
+pub fn register_transfer(hwnd: HWND, spec: &HotkeySpec) -> Result<()> {
+    if spec.transfer.trim().is_empty() {
+        return Ok(());
+    }
+    let (mods, vk) = parse_hotkey(&spec.transfer)?;
+    unsafe {
+        RegisterHotKey(hwnd, HOTKEY_ID_TRANSFER, mods, vk as u32)
+            .map_err(|e| anyhow::anyhow!("RegisterHotKey transfer 실패 ({}): {}", spec.transfer, e))?;
+    }
+    tracing::info!("전역 단축키 등록 (transfer): {}", spec.transfer);
+    Ok(())
+}
+
+/// return hotkey 는 RegisterHotKey 대신 LL 훅 안에서 VK 매칭.
+/// 여기서 parse 만 하고 VK 를 반환. 호출자가 hooks::RETURN_VK 에 저장.
+pub fn parse_return_hotkey(spec: &HotkeySpec) -> Option<u16> {
+    if spec.return_hotkey.trim().is_empty() {
+        return None;
+    }
+    match parse_hotkey(&spec.return_hotkey) {
+        Ok((_mods, vk)) => Some(vk),
+        Err(e) => {
+            tracing::warn!("return hotkey 파싱 실패 ({}): {}", spec.return_hotkey, e);
+            None
+        }
+    }
 }
 
 pub fn unregister_toggle(hwnd: HWND) {

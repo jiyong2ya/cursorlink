@@ -64,7 +64,12 @@ pub fn run(cfg: Config) -> Result<()> {
         .context("watchdog 스레드 시작 실패")?;
 
     // Hotkey + Tray 스레드 (자체 hidden window)
-    let hk_spec = HotkeySpec { toggle: cfg.hotkey_toggle.clone(), mirror: String::new() };
+    let hk_spec = HotkeySpec {
+        toggle: cfg.hotkey_toggle.clone(),
+        mirror: String::new(),
+        transfer: String::new(),
+        return_hotkey: String::new(),
+    };
     if let Err(e) = hotkey::spawn_window_thread(
         hk_spec,
         "cursorlink (slave)".to_string(),
@@ -172,9 +177,10 @@ fn tcp_writer_loop(mut sock: TcpStream, rx: crossbeam_channel::Receiver<Frame>) 
 fn handle_incoming(f: Frame, tx: &TcpTx) {
     match f.msg_type() {
         MSG_TAKE_CONTROL => {
+            let entry_side = f.payload_byte(0);
             let entry_y_pct = f.payload_byte(1);
-            tracing::info!("slave: TAKE_CONTROL 수신 (entry_y_pct={}) → Active", entry_y_pct);
-            enter_active(entry_y_pct, tx);
+            tracing::info!("slave: TAKE_CONTROL 수신 (side={}, y_pct={}) → Active", entry_side, entry_y_pct);
+            enter_active(entry_side, entry_y_pct, tx);
         }
         MSG_RETURN_CONTROL => {
             // Master 가 Mirror OFF 하면서 보낸 경우. Idle 로 복귀 + 커서 숨김.
@@ -250,20 +256,23 @@ fn foreground_watcher_loop(tx: TcpTx) {
 // 상태 전환 API
 // -----------------------------------------------------------------------------
 
-fn enter_active(entry_y_pct: u8, tx: &TcpTx) {
+fn enter_active(entry_side: u8, entry_y_pct: u8, tx: &TcpTx) {
     if !SHARED.enabled.load(Ordering::Acquire) {
-        // Slave 가 disabled 인 상태에서 Master 로부터 TAKE_CONTROL 을 받은 상황.
-        // 이대로 무시하면 Master 는 커서 락 상태로 영구 갇힘 (사용자가 hotkey 로만 탈출 가능).
-        // 즉시 RETURN_CONTROL 을 응답해서 Master 를 Local 로 복귀시킴.
         tracing::info!("slave: TAKE_CONTROL 수신했으나 disabled → RETURN_CONTROL 자동 응답");
         let _ = tx.try_send(Frame::new(MSG_RETURN_CONTROL));
         return;
     }
 
     let scr = cursor::primary_screen();
-    // 진입: 왼쪽 끝 (10px 안쪽) + 지정된 세로 비율
-    let entry_x = scr.left + 10;
-    let entry_y = scr.top + (scr.height() as i64 * entry_y_pct as i64 / 100) as i32;
+    let (entry_x, entry_y) = if entry_side == tcp::SIDE_CENTER {
+        // hotkey_transfer 로 진입: 화면 중앙.
+        (scr.left + scr.width() / 2, scr.top + scr.height() / 2)
+    } else {
+        // 엣지 크로싱 진입: 왼쪽 벽 10px 안쪽 + 지정된 세로 비율.
+        let ex = scr.left + 10;
+        let ey = scr.top + (scr.height() as i64 * entry_y_pct as i64 / 100) as i32;
+        (ex, ey)
+    };
 
     cursor::set_pos(entry_x, entry_y);
     cursor::show();

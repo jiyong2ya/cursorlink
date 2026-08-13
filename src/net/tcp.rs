@@ -33,6 +33,8 @@ pub const SIDE_LEFT:   u8 = 0;
 pub const SIDE_RIGHT:  u8 = 1;
 pub const SIDE_TOP:    u8 = 2;
 pub const SIDE_BOTTOM: u8 = 3;
+/// hotkey_transfer 로 즉시 전환할 때 사용. Slave 커서를 화면 중앙에 배치.
+pub const SIDE_CENTER: u8 = 4;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Frame(pub [u8; FRAME_SIZE]);

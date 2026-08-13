@@ -201,18 +201,33 @@ fn heartbeat_loop(tx: TcpTx) {
 // 상태 전환 API (capture.rs 에서 호출)
 // -----------------------------------------------------------------------------
 
-/// 오른쪽 엣지 도달 시 호출. Local → Remote 전환.
+/// 엣지 크로싱 (커서가 오른쪽 끝 도달) 시 호출. Local → Remote 전환. Slave 는 왼쪽 벽에서 진입.
 pub fn transfer_to_remote(tx: &TcpTx, entry_y_pct: u8) {
+    transfer_to_remote_impl(tx, tcp::SIDE_LEFT, entry_y_pct)
+}
+
+/// hotkey_transfer 로 즉시 전환. Slave 커서를 화면 중앙에 놓음.
+pub fn transfer_to_remote_center(tx: &TcpTx) {
+    transfer_to_remote_impl(tx, tcp::SIDE_CENTER, 50)
+}
+
+fn transfer_to_remote_impl(tx: &TcpTx, entry_side: u8, entry_y_pct: u8) {
     if !SHARED.enabled.load(Ordering::Acquire) { return; }
     if SHARED.get() != MasterState::Local { return; }
 
-    // TCP 로 TAKE_CONTROL 전송 (entry_side = LEFT: slave 왼쪽에서 들어옴)
-    let _ = tx.try_send(Frame::take_control(tcp::SIDE_LEFT, entry_y_pct));
+    let _ = tx.try_send(Frame::take_control(entry_side, entry_y_pct));
+
+    // Remote 진입 시 LL 훅 install (Master 앱에 입력 안 가게 소비).
+    unsafe {
+        if let Err(e) = crate::input::hooks::install() {
+            tracing::warn!("master: 훅 install 실패, 이중 입력 발생 가능: {}", e);
+        }
+    }
 
     crate::input::cursor::lock_center();
     crate::input::cursor::hide();
     SHARED.set(MasterState::Remote);
-    tracing::info!("master: Local → Remote (entry_y_pct={})", entry_y_pct);
+    tracing::info!("master: Local → Remote (side={}, y_pct={})", entry_side, entry_y_pct);
 }
 
 /// slave 로부터 RETURN_CONTROL 수신 시 호출. Remote → Local 로 복귀.
@@ -220,8 +235,23 @@ pub fn return_to_local() {
     if SHARED.get() != MasterState::Remote { return; }
     crate::input::cursor::unlock();
     crate::input::cursor::show();
+    // Local 복귀 시 LL 훅 uninstall (게임 anti-cheat 감지 대상 제거).
+    unsafe { crate::input::hooks::uninstall(); }
     SHARED.set(MasterState::Local);
     tracing::info!("master: Remote → Local");
+}
+
+/// hotkey_return (LL 훅에서 감지) 에서 호출. Master 로 즉시 복귀 + Slave 에 RETURN_CONTROL 전송.
+/// return_to_local 과 달리 tx 통해 Slave 에도 알림.
+pub fn force_return_to_local() {
+    if SHARED.get() != MasterState::Remote { return; }
+    // 이 함수는 LL 훅 스레드에서 호출됨. G_TCP_TX 는 capture.rs 의 static 이라 unsafe 로 접근.
+    unsafe {
+        if let Some(tx) = crate::input::capture::tcp_tx_ref() {
+            let _ = tx.try_send(Frame::new(MSG_RETURN_CONTROL));
+        }
+    }
+    return_to_local();
 }
 
 /// 단축키로 기능 완전 off. Remote 였다면 즉시 Local 복귀.
@@ -257,6 +287,12 @@ pub fn toggle_mirror(tx: &TcpTx) {
             return;
         }
         let _ = tx.try_send(Frame::take_control(tcp::SIDE_LEFT, 50));
+        // Mirror 도 훅이 필요 (키보드 forward 를 위해). 소비는 안 함.
+        unsafe {
+            if let Err(e) = crate::input::hooks::install() {
+                tracing::warn!("master: mirror 훅 install 실패: {}", e);
+            }
+        }
         SHARED.mirror.store(true, Ordering::Release);
         tracing::info!("master: Mirror ON");
     } else {
@@ -265,8 +301,12 @@ pub fn toggle_mirror(tx: &TcpTx) {
     }
 }
 
-/// Mirror off 처리 (TCP 전송 없이 상태만).
+/// Mirror off 처리 (TCP 전송 없이 상태만). Remote 아닌 경우 훅도 uninstall.
 fn toggle_mirror_off_internal() {
     SHARED.mirror.store(false, Ordering::Release);
+    // Remote 상태가 아니면 훅도 uninstall (Local 로 완전 복귀).
+    if SHARED.get() != MasterState::Remote {
+        unsafe { crate::input::hooks::uninstall(); }
+    }
     tracing::info!("master: Mirror OFF");
 }

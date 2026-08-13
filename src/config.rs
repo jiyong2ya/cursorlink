@@ -25,6 +25,14 @@ pub struct Config {
     /// 빈 문자열이면 Mirror 기능 비활성.
     #[serde(default)]
     pub hotkey_mirror: String,
+    /// Local → Remote (Slave) 즉시 전환 단축키. Slave 커서는 화면 중앙에 놓임.
+    /// 빈 문자열이면 비활성 (엣지 크로싱만 사용).
+    #[serde(default)]
+    pub hotkey_transfer: String,
+    /// Remote 상태에서 Master 로 즉시 복귀 단축키.
+    /// LL 훅 안에서 감지 (Slave 로 forward 안 하고 소비).
+    #[serde(default)]
+    pub hotkey_return: String,
     #[serde(default)]
     pub autostart: bool,
     /// Remote 상태에서 키보드 입력을 Slave 로 전송할지.

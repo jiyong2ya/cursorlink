@@ -24,6 +24,14 @@ hotkey_toggle = "ctrl+alt+shift+k"
 # 빈 문자열이면 Mirror 기능 비활성. 예: "num*" 또는 "ctrl+shift+m"
 hotkey_mirror = ""
 
+# Local → Remote 즉시 전환 단축키. Slave 커서는 화면 중앙에 놓임.
+# 빈 문자열이면 비활성 (엣지 크로싱만 사용). 예: "num-"
+hotkey_transfer = ""
+
+# Remote → Master 복귀 단축키. Slave 로 forward 안 되고 Master 로 돌아옴.
+# 빈 문자열이면 비활성. 예: "num/"
+hotkey_return = ""
+
 # Windows 시작 시 자동 실행 (레지스트리 HKCU\Run 사용)
 autostart = false
 

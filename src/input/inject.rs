@@ -34,8 +34,6 @@ static LAST_SEQ: AtomicU32 = AtomicU32::new(0);
 static PREV_INJECT_X: AtomicI32 = AtomicI32::new(i32::MIN);
 
 pub fn run_with_ctx(ctx: SlaveCtx) -> Result<()> {
-    unsafe { boost_priority(); }
-
     let sock = udp::bind_recv(ctx.cfg.udp_port)?;
     tracing::info!("slave: UDP {} 대기 중", ctx.cfg.udp_port);
 
@@ -59,14 +57,6 @@ pub fn run_with_ctx(ctx: SlaveCtx) -> Result<()> {
     }
 }
 
-unsafe fn boost_priority() {
-    use windows::Win32::System::Threading::{
-        GetCurrentProcess, GetCurrentThread, SetPriorityClass, SetThreadPriority,
-        HIGH_PRIORITY_CLASS, THREAD_PRIORITY_TIME_CRITICAL,
-    };
-    let _ = SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-    let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-}
 
 fn is_new_seq(seq: u32) -> bool {
     // 최초 (LAST_SEQ==0) 는 통과.

@@ -22,10 +22,6 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentThread, SetPriorityClass, SetThreadPriority,
-    HIGH_PRIORITY_CLASS, THREAD_PRIORITY_TIME_CRITICAL,
-};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Input::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -37,7 +33,7 @@ use crate::net::packet::{
     Kind, Packet, FLAG_BTN_DOWN, FLAG_KEY_EXT,
     MB_LEFT, MB_MIDDLE, MB_RIGHT, MB_X1, MB_X2,
 };
-use crate::hotkey::HOTKEY_ID_MIRROR;
+use crate::hotkey::{HOTKEY_ID_MIRROR, HOTKEY_ID_TRANSFER};
 use crate::net::udp;
 use crate::state::MasterState;
 
@@ -51,9 +47,12 @@ static mut G_TCP_TX: Option<TcpTx> = None;
 /// 엣지 크로싱 검출용 이전 X 좌표. i32::MIN 은 "아직 초기화 안 됨" 센티넬.
 static PREV_EDGE_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(i32::MIN);
 
-pub fn run_with_ctx(ctx: MasterCtx) -> Result<()> {
-    unsafe { boost_priority(); }
+/// Master 시작 후 grace period. 이 시간 동안엔 엣지 크로싱 감지 안 함.
+/// 재시작 시 커서가 우측 끝 근처에 앉아있어서 첫 이동에 실수 트리거 되는 것 방지.
+static STARTUP_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+const EDGE_GRACE_MS: u128 = 3000;
 
+pub fn run_with_ctx(ctx: MasterCtx) -> Result<()> {
     let peer: SocketAddr = format!("{}:{}", ctx.cfg.peer_ip, ctx.cfg.udp_port).parse()
         .with_context(|| format!("peer 주소 파싱 실패"))?;
     let sock = udp::bind_send(peer)?;
@@ -63,6 +62,9 @@ pub fn run_with_ctx(ctx: MasterCtx) -> Result<()> {
         G_TCP_TX = Some(ctx.tcp_tx);
     }
     crate::input::hooks::FORWARD_KEYBOARD.store(ctx.cfg.forward_keyboard, Ordering::Release);
+
+    // Startup 시간 기록 → 엣지 크로싱 grace period 용.
+    let _ = STARTUP_TIME.set(Instant::now());
 
     // 크로싱 검출용 이전 X 좌표를 현재 커서 위치로 초기화.
     // 이렇게 안 하면 사용자가 우측 끝까지 한 이벤트에 도달 시 그게 baseline 으로 흡수돼서
@@ -79,6 +81,8 @@ pub fn run_with_ctx(ctx: MasterCtx) -> Result<()> {
         let hk = HotkeySpec {
             toggle: ctx.cfg.hotkey_toggle.clone(),
             mirror: ctx.cfg.hotkey_mirror.clone(),
+            transfer: ctx.cfg.hotkey_transfer.clone(),
+            return_hotkey: ctx.cfg.hotkey_return.clone(),
         };
         if let Err(e) = hotkey::register_toggle(hwnd, &hk) {
             tracing::warn!("master: hotkey 등록 실패, 계속 진행: {}", e);
@@ -86,23 +90,25 @@ pub fn run_with_ctx(ctx: MasterCtx) -> Result<()> {
         if let Err(e) = hotkey::register_mirror(hwnd, &hk) {
             tracing::warn!("master: mirror hotkey 등록 실패, 계속 진행: {}", e);
         }
+        if let Err(e) = hotkey::register_transfer(hwnd, &hk) {
+            tracing::warn!("master: transfer hotkey 등록 실패, 계속 진행: {}", e);
+        }
+        // return hotkey 는 RegisterHotKey 대신 LL 훅에서 감지. VK 를 hooks::RETURN_VK 에 저장.
+        if let Some(vk) = hotkey::parse_return_hotkey(&hk) {
+            crate::input::hooks::RETURN_VK.store(vk as u32, Ordering::Release);
+            tracing::info!("master: return hotkey VK={:#x} 등록 (LL 훅에서 감지)", vk);
+        }
         if let Err(e) = crate::tray::add(hwnd, "cursorlink (master)") {
             tracing::warn!("master: 트레이 아이콘 실패, 계속 진행: {}", e);
         }
-        // Remote 상태일 때 Master 입력을 소비할 저수준 훅 등록.
-        if let Err(e) = crate::input::hooks::install() {
-            tracing::warn!("master: 저수준 훅 등록 실패, 이중 입력 발생 가능: {}", e);
-        }
+        // 저수준 훅은 startup 에 설치하지 않음. Local 상태에선 훅 없이 Raw Input 만.
+        // 게임 anti-cheat 이 훅 감지해서 방어 반응하는 것을 방지.
+        // 훅은 transfer_to_remote / toggle_mirror 에서 필요할 때 install, return_to_local 에서 uninstall.
         tracing::info!("master: Raw Input 등록 완료");
         message_loop();
         crate::input::hooks::uninstall();
     }
     Ok(())
-}
-
-unsafe fn boost_priority() {
-    let _ = SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-    let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 }
 
 unsafe fn create_message_window() -> Result<HWND> {
@@ -183,6 +189,10 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 } else if id == HOTKEY_ID_MIRROR {
                     if let Some(tx) = &G_TCP_TX {
                         master::toggle_mirror(tx);
+                    }
+                } else if id == HOTKEY_ID_TRANSFER {
+                    if let Some(tx) = &G_TCP_TX {
+                        master::transfer_to_remote_center(tx);
                     }
                 }
                 LRESULT(0)
@@ -335,6 +345,14 @@ fn send_mouse_pos_from_current() {
 unsafe fn check_edge_and_transfer() {
     // Mirror 상태면 Remote 로 안 넘어감.
     if master::SHARED.mirror.load(Ordering::Acquire) { return; }
+
+    // Startup grace period: 재시작 시 커서가 우측 끝 근처에 있으면 첫 이동에 실수 트리거되는 것 방지.
+    if let Some(start) = STARTUP_TIME.get() {
+        if start.elapsed().as_millis() < EDGE_GRACE_MS {
+            return;
+        }
+    }
+
     let pt = match cursor::get_pos() { Some(p) => p, None => return };
     let scr = cursor::primary_screen();
     let edge = scr.right - 1;
@@ -434,24 +452,20 @@ fn send_wheel(hx: i16, vy: i16) {
     });
 }
 
+/// LL 훅에서 Slave 로 TCP frame 보내야 할 때 (예: hotkey_return 감지) 접근용.
+/// 훅 스레드는 메인 스레드와 같으므로 static 접근 안전.
+pub unsafe fn tcp_tx_ref() -> Option<&'static TcpTx> {
+    G_TCP_TX.as_ref()
+}
+
 pub fn send_key(scan: u16, down: bool, ext: bool) {
     let mut flags = 0u8;
     if down { flags |= FLAG_BTN_DOWN; }
     if ext  { flags |= FLAG_KEY_EXT; }
-
-    let make_packet = || Packet {
+    send_packet(Packet {
         seq: next_seq(), ts_us: now_us(),
         kind: Kind::KeyEvent, flags,
         button: scan,
         dx: 0, dy: 0, wheel_dx: 0, wheel_dy: 0,
-    };
-
-    // 키-다운은 1회, 키-업은 3회 전송 (UDP 손실 방어).
-    // 키-업 손실 시 modifier 가 stuck 되어 이후 입력이 어긋나는 문제 방지.
-    // SendInput 의 key-up 은 이미 떨어진 키에 대해 idempotent (재적용해도 부작용 없음).
-    send_packet(make_packet());
-    if !down {
-        send_packet(make_packet());
-        send_packet(make_packet());
-    }
+    });
 }
