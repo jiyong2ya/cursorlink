@@ -27,6 +27,11 @@ use crate::state::{MasterShared, MasterState};
 
 pub static SHARED: MasterShared = MasterShared::new();
 
+/// Remote 진입 직전에 저장하는 Master 커서 위치. Local 복귀 시 여기로 되돌림.
+/// i32::MIN 이면 "저장 안 됨" 센티넬 (첫 진입 이전 상태).
+static SAVED_CURSOR_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(i32::MIN);
+static SAVED_CURSOR_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(i32::MIN);
+
 /// wnd_proc / edge 감지 에서 TCP 전송을 요청하기 위한 채널.
 pub type TcpTx = Sender<Frame>;
 
@@ -217,6 +222,12 @@ fn transfer_to_remote_impl(tx: &TcpTx, entry_side: u8, entry_y_pct: u8) {
 
     let _ = tx.try_send(Frame::take_control(entry_side, entry_y_pct));
 
+    // Remote 진입 직전 커서 위치 저장 → Local 복귀 시 여기로 되돌림.
+    if let Some(pt) = crate::input::cursor::get_pos() {
+        SAVED_CURSOR_X.store(pt.x, Ordering::Release);
+        SAVED_CURSOR_Y.store(pt.y, Ordering::Release);
+    }
+
     // Remote 진입 시 LL 훅 install (Master 앱에 입력 안 가게 소비).
     unsafe {
         if let Err(e) = crate::input::hooks::install() {
@@ -237,6 +248,15 @@ pub fn return_to_local() {
     crate::input::cursor::show();
     // Local 복귀 시 LL 훅 uninstall (게임 anti-cheat 감지 대상 제거).
     unsafe { crate::input::hooks::uninstall(); }
+
+    // 저장된 커서 위치로 복원 (Remote 진입 직전 위치).
+    let sx = SAVED_CURSOR_X.load(Ordering::Acquire);
+    let sy = SAVED_CURSOR_Y.load(Ordering::Acquire);
+    if sx != i32::MIN && sy != i32::MIN {
+        crate::input::cursor::set_pos(sx, sy);
+        tracing::debug!("master: 커서 위치 복원 ({}, {})", sx, sy);
+    }
+
     SHARED.set(MasterState::Local);
     tracing::info!("master: Remote → Local");
 }
