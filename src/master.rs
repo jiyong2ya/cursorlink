@@ -225,8 +225,9 @@ fn tcp_writer_loop(mut sock: TcpStream, rx: Receiver<Frame>) {
 fn handle_incoming(side: Side, f: Frame) {
     match f.msg_type() {
         MSG_RETURN_CONTROL => {
-            tracing::info!("master: [{}] RETURN_CONTROL 수신", side.label());
-            post_to_main(WM_PEER_RETURN, side);
+            let reason = f.payload_byte(0);
+            tracing::info!("master: [{}] RETURN_CONTROL 수신 (reason={})", side.label(), reason);
+            post_to_main_with(WM_PEER_RETURN, side, reason as isize);
         }
         MSG_HEARTBEAT => {
             tracing::trace!("master: [{}] HEARTBEAT 수신", side.label());
@@ -295,9 +296,14 @@ fn main_hwnd() -> Option<HWND> {
 }
 
 fn post_to_main(msg: u32, side: Side) {
+    post_to_main_with(msg, side, 0);
+}
+
+/// wparam = Side, lparam = 추가 값 (WM_PEER_RETURN 의 복귀 이유 등).
+fn post_to_main_with(msg: u32, side: Side, extra: isize) {
     if let Some(hwnd) = main_hwnd() {
         unsafe {
-            let _ = PostMessageW(hwnd, msg, WPARAM(side as usize), LPARAM(0));
+            let _ = PostMessageW(hwnd, msg, WPARAM(side as usize), LPARAM(extra));
         }
     }
 }
@@ -447,7 +453,8 @@ pub fn force_return_to_local() {
 }
 
 /// 슬레이브가 RETURN_CONTROL 보냄 (화면 끝 도달 / UAC 감지 / 슬레이브 disabled).
-pub fn on_peer_return(side: Side) {
+/// reason: tcp::RETURN_* (구버전 슬레이브는 항상 RETURN_NORMAL).
+pub fn on_peer_return(side: Side, reason: u8) {
     if SHARED.get() == MasterState::Remote && SHARED.active() == side {
         leave_remote(false);
     } else if SHARED.mirror.load(Ordering::Acquire) && SHARED.is_mirror_target(side) {
@@ -456,6 +463,19 @@ pub fn on_peer_return(side: Side) {
         tracing::warn!("master: 미러 중 {} 슬레이브가 RETURN_CONTROL → 그 슬레이브는 미러 안 됨", side.label());
     } else {
         tracing::debug!("master: {} 슬레이브 RETURN_CONTROL 무시 (제어 중 아님)", side.label());
+        return;
+    }
+    // 보통 복귀 (벽/단축키) 말고는 왜 돌아왔는지 알려줌.
+    match reason {
+        tcp::RETURN_SECURE_DESKTOP => notify(&format!(
+            "{} 슬레이브에 UAC 확인창/잠금화면이 떠서 돌아옴 — 그 PC 마우스/키보드로 처리",
+            side.label()
+        )),
+        tcp::RETURN_DISABLED => notify(&format!(
+            "{} 슬레이브 cursorlink 가 꺼져 있음 (그 PC 트레이에서 켜기)",
+            side.label()
+        )),
+        _ => {}
     }
 }
 

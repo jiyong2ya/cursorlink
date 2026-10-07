@@ -9,7 +9,8 @@
 //                                          entry_side: 커서가 나타날 곳. 0=왼쪽 벽, 1=오른쪽 벽, 4=화면 중앙
 //                                          entry_y_percent: 0..100 (진입 위치의 세로 비율)
 //                                          return_side: 이 벽에 닿으면 마스터로 복귀. 0=왼쪽 (구버전 기본값), 1=오른쪽
-//   0x02 RETURN_CONTROL  Slave  → Master  payload: 무의미
+//   0x02 RETURN_CONTROL  양방향            payload: [reason, 0...] (Slave → Master 일 때 복귀 이유, 구버전은 0)
+//                                          reason: 0=보통 (벽/단축키), 1=보안 화면 (UAC/잠금화면), 2=슬레이브 꺼짐
 //   0x03 HEARTBEAT       양방향            payload: 무의미 (3초 주기)
 //   0x04 HELLO           Master → Slave   최초 연결 직후 인증. payload: shared_secret 앞 8바이트
 //
@@ -41,6 +42,14 @@ pub const SIDE_BOTTOM: u8 = 3;
 /// hotkey_transfer 로 즉시 전환할 때 사용. Slave 커서를 화면 중앙에 배치.
 pub const SIDE_CENTER: u8 = 4;
 
+// RETURN_CONTROL 이유 (payload byte 0)
+/// 복귀 벽 도달 / 단축키 등 보통 복귀
+pub const RETURN_NORMAL: u8 = 0;
+/// 슬레이브에 UAC 확인창 / 잠금화면 (보안 화면) → 공유 입력으로 조작 불가라 자동 복귀
+pub const RETURN_SECURE_DESKTOP: u8 = 1;
+/// 슬레이브 기능이 꺼져 있어서 TAKE_CONTROL 거절
+pub const RETURN_DISABLED: u8 = 2;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Frame(pub [u8; FRAME_SIZE]);
 
@@ -55,6 +64,11 @@ impl Frame {
         f.0[1] = entry_side;
         f.0[2] = entry_y_pct;
         f.0[3] = return_side;
+        f
+    }
+    pub fn return_control(reason: u8) -> Self {
+        let mut f = Self::new(MSG_RETURN_CONTROL);
+        f.0[1] = reason;
         f
     }
     pub fn hello(secret: &str) -> Self {
@@ -155,6 +169,15 @@ mod tests {
         f.0[1] = SIDE_LEFT;
         f.0[2] = 50;
         assert_eq!(f.payload_byte(2), SIDE_LEFT);
+    }
+
+    #[test]
+    fn return_control_reason() {
+        let f = Frame::return_control(RETURN_SECURE_DESKTOP);
+        assert_eq!(f.msg_type(), MSG_RETURN_CONTROL);
+        assert_eq!(f.payload_byte(0), RETURN_SECURE_DESKTOP);
+        // 구버전 형식 (payload 0) 은 보통 복귀
+        assert_eq!(Frame::new(MSG_RETURN_CONTROL).payload_byte(0), RETURN_NORMAL);
     }
 
     #[test]

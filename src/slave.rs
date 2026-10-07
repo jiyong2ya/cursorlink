@@ -207,41 +207,63 @@ fn heartbeat_loop(tx: TcpTx) {
     }
 }
 
-/// Secure desktop (UAC, lock screen, Ctrl+Alt+Del 등) 감지용 watchdog.
+/// Secure desktop (UAC 확인창, 잠금화면, Ctrl+Alt+Del 등) 감지용 watchdog.
 ///
-/// UAC/잠금화면이 뜨면 secure desktop 이 활성화되어 우리 프로세스는 SendInput/SetCursorPos 를
-/// 실행해도 무시됨. Slave 가 Active 인 상태에서 이 상황을 감지하면 Master 에게
-/// 자동으로 RETURN_CONTROL 을 보내 사용자를 갇힘 상태에서 자동 탈출시킴.
-///
-/// 감지 방식: `GetForegroundWindow` 가 NULL 을 반환하면 secure desktop 상태.
-/// (일반 상태에선 항상 non-null. NULL 은 다른 desktop 이 활성이라는 뜻.)
+/// UAC/잠금화면이 뜨면 입력이 별도 데스크톱 (Winlogon) 으로 전환되어 우리 프로세스의
+/// SendInput/SetCursorPos 가 안 먹힘. Slave 가 Active 인 상태에서 이걸 감지하면 Master 에게
+/// 자동으로 RETURN_CONTROL (이유 = 보안 화면) 을 보내 갇힘 상태에서 자동 탈출시킴.
 fn foreground_watcher_loop(tx: TcpTx) {
-    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-
-    // 오탐 방지: 2회 연속 NULL 이어야 실제 secure desktop 으로 간주.
-    let mut null_count = 0u32;
+    // 오탐 방지: 2회 연속 (0.4초) 이어야 실제 보안 화면으로 간주.
+    let mut hits = 0u32;
     loop {
         thread::sleep(Duration::from_millis(200));
         if SHARED.get() != SlaveState::Active {
-            null_count = 0;
+            hits = 0;
             continue;
         }
-        let is_secure = unsafe {
-            let hwnd = GetForegroundWindow();
-            hwnd.0.is_null()
-        };
-        if is_secure {
-            null_count += 1;
-            if null_count >= 2 {
-                tracing::warn!(
-                    "slave: secure desktop 감지 (UAC/lock/etc) → 자동 RETURN_CONTROL"
-                );
-                return_control(&tx);
-                null_count = 0;
+        if input_desktop_is_secure() {
+            hits += 1;
+            if hits >= 2 {
+                tracing::warn!("slave: 보안 화면 감지 (UAC 확인창/잠금화면 등) → 마스터로 자동 복귀");
+                return_control_because(&tx, tcp::RETURN_SECURE_DESKTOP);
+                hits = 0;
             }
         } else {
-            null_count = 0;
+            hits = 0;
         }
+    }
+}
+
+/// 지금 입력을 받는 데스크톱이 일반 데스크톱 (Default) 이 아니면 true.
+/// UAC 확인창 / 잠금화면 / Ctrl+Alt+Del 은 Winlogon (보안) 데스크톱으로 전환되는데,
+/// 일반/관리자 권한 프로세스는 그 데스크톱을 열 수 없어서 OpenInputDesktop 이 실패함.
+/// (예전 방식 GetForegroundWindow == NULL 은 UAC 때 NULL 이 안 나와서 놓쳤음)
+fn input_desktop_is_secure() -> bool {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::StationsAndDesktops::{
+        CloseDesktop, GetUserObjectInformationW, OpenInputDesktop,
+        DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS, UOI_NAME,
+    };
+    unsafe {
+        let desk = match OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) {
+            Ok(d) => d,
+            Err(_) => return true, // 못 열면 보안 데스크톱
+        };
+        let mut name = [0u16; 64];
+        let mut needed = 0u32;
+        let ok = GetUserObjectInformationW(
+            HANDLE(desk.0),
+            UOI_NAME,
+            Some(name.as_mut_ptr() as *mut core::ffi::c_void),
+            (name.len() * 2) as u32,
+            Some(&mut needed),
+        ).is_ok();
+        let _ = CloseDesktop(desk);
+        if !ok {
+            return false;
+        }
+        let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+        !String::from_utf16_lossy(&name[..len]).eq_ignore_ascii_case("Default")
     }
 }
 
@@ -252,7 +274,7 @@ fn foreground_watcher_loop(tx: TcpTx) {
 fn enter_active(entry_side: u8, entry_y_pct: u8, return_side: u8, tx: &TcpTx) {
     if !SHARED.enabled.load(Ordering::Acquire) {
         tracing::info!("slave: TAKE_CONTROL 수신했으나 disabled → RETURN_CONTROL 자동 응답");
-        let _ = tx.try_send(Frame::new(MSG_RETURN_CONTROL));
+        let _ = tx.try_send(Frame::return_control(tcp::RETURN_DISABLED));
         return;
     }
 
@@ -279,11 +301,16 @@ fn enter_active(entry_side: u8, entry_y_pct: u8, return_side: u8, tx: &TcpTx) {
 
 /// 복귀 벽 (왼쪽 or 오른쪽) 도달 시 호출. Active → Idle.
 pub fn return_control(tx: &TcpTx) {
+    return_control_because(tx, tcp::RETURN_NORMAL);
+}
+
+/// Active → Idle + 마스터에 복귀 이유와 함께 RETURN_CONTROL.
+fn return_control_because(tx: &TcpTx, reason: u8) {
     if SHARED.get() != SlaveState::Active { return; }
-    let _ = tx.try_send(Frame::new(MSG_RETURN_CONTROL));
+    let _ = tx.try_send(Frame::return_control(reason));
     cursor::hide();
     SHARED.set(SlaveState::Idle);
-    tracing::info!("slave: Active → Idle");
+    tracing::info!("slave: Active → Idle (reason={})", reason);
 }
 
 fn force_return_idle() {
@@ -296,4 +323,17 @@ fn force_return_idle() {
 pub fn set_enabled(en: bool) {
     SHARED.enabled.store(en, Ordering::Release);
     tracing::info!("slave: enabled={}", en);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 사용자 세션의 일반 화면에서 돌릴 때만 의미 있음 (서비스/CI 에선 다를 수 있음) → 수동 실행:
+    /// cargo test input_desktop -- --ignored
+    #[test]
+    #[ignore]
+    fn input_desktop_is_default_in_normal_session() {
+        assert!(!input_desktop_is_secure());
+    }
 }

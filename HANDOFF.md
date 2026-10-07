@@ -127,8 +127,11 @@ Active        ──복귀 벽 도달──▶          Idle   (RETURN_CONTROL �
 Active        ──RETURN_CONTROL (마스터)──▶ Idle
 * ──TCP 끊김──▶ Disconnected
 ```
-- watchdog: Active 중 secure desktop (UAC/잠금화면) 감지 → 자동 RETURN_CONTROL.
-- disabled 상태에서 TAKE_CONTROL 받으면 바로 RETURN_CONTROL 응답 (마스터 갇힘 방지).
+- watchdog: Active 중 0.2초마다 입력 데스크톱 확인. `OpenInputDesktop` 실패 or 이름이 Default 아님
+  = 보안 화면 (UAC/잠금화면/Ctrl+Alt+Del) → 2회 연속이면 RETURN_CONTROL(reason=보안 화면).
+  (v0.2.3 까지는 `GetForegroundWindow == NULL` 로 추정 → UAC 때 NULL 이 안 나와서 못 잡고 갇혔음)
+- disabled 상태에서 TAKE_CONTROL 받으면 바로 RETURN_CONTROL(reason=꺼짐) 응답 (마스터 갇힘 방지).
+- 마스터는 reason 이 보통이 아니면 알림으로 이유 표시.
 
 **스레드:**
 - Master: main (메시지 펌프: WM_INPUT / WM_HOTKEY / 트레이 / WM_PEER_* / LL 훅),
@@ -152,6 +155,7 @@ Active        ──RETURN_CONTROL (마스터)──▶ Idle
 ```
 0    msg_type (0x01 TAKE_CONTROL / 0x02 RETURN_CONTROL / 0x03 HEARTBEAT / 0x04 HELLO)
 1..8 payload
+     RETURN_CONTROL: [reason, 0...]  reason 0=보통 (벽/단축키), 1=보안 화면, 2=슬레이브 꺼짐 (구버전은 0)
      TAKE_CONTROL: [entry_side, entry_y_pct, return_side, 0...]
        entry_side: 0=왼쪽 벽, 1=오른쪽 벽, 4=화면 중앙 / return_side: 0=왼쪽 벽 (구버전 기본), 1=오른쪽 벽
      HELLO: shared_secret 앞 7바이트

@@ -217,7 +217,8 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                 LRESULT(0)
             }
             m if m == master::WM_PEER_RETURN => {
-                master::on_peer_return(Side::from_u8(wparam.0 as u8));
+                // lparam = 복귀 이유 (tcp::RETURN_*)
+                master::on_peer_return(Side::from_u8(wparam.0 as u8), lparam.0 as u8);
                 LRESULT(0)
             }
             m if m == master::WM_SHOW_NOTE => {
