@@ -5,7 +5,8 @@
 //     소비 (consume). Raw Input 만으로는 관찰만 가능하고 이벤트가 그대로 Master의
 //     활성 창까지 전달되어 이중 입력이 발생함.
 //  2. Remote 중 단축키 감지. 훅이 키를 소비하면 RegisterHotKey 가 안 불리므로
-//     (복귀 / 왼쪽·오른쪽 전환 / 쓸어넘기기 양쪽·왼쪽·오른쪽 / toggle) 를 여기서 직접 매칭.
+//     (복귀 / 쓸어넘기기 양쪽·왼쪽·오른쪽 / toggle) 를 여기서 직접 매칭.
+//     왼쪽/오른쪽 이동·미러 키는 슬레이브에 그냥 입력되게 둠 (handled_while_remote).
 //  3. Mirror 중 키보드를 Slave 로 forward (소비는 안 함).
 //
 // 소비 조건: enabled && state == Remote (Mirror 아님)
@@ -85,6 +86,16 @@ fn find_hotkey(vk: u32, mods: u32) -> Option<HookAction> {
         let v = HOTKEYS[*a as usize].load(Ordering::Acquire);
         v != 0 && v == key
     })
+}
+
+/// 슬레이브 쓰는 중 (Remote) 에 훅이 가로채서 처리하는 단축키.
+/// 복귀 / 쓸어넘기기 on/off / 전체 on/off 만. 나머지는 슬레이브에 그냥 입력됨.
+fn handled_while_remote(action: HookAction) -> bool {
+    matches!(
+        action,
+        HookAction::Return | HookAction::Edge | HookAction::EdgeLeft
+            | HookAction::EdgeRight | HookAction::Toggle
+    )
 }
 
 /// Mirror 중 Slave 로 안 보낸 단축키. 떼짐도 같이 안 보내려고 기억.
@@ -208,7 +219,8 @@ extern "system" fn keyboard_hook_proc(n_code: i32, wparam: WPARAM, lparam: LPARA
 
             // Remote 중 단축키: Slave 로 안 보내고 여기서 처리 + 소비.
             // 눌림에서 한 번만 실행하고, 오토리피트/떼기는 조용히 소비.
-            // (Mirror 단축키는 Remote 중엔 의미 없으므로 일반 키처럼 Slave 로 forward.)
+            // 왼쪽/오른쪽 이동·미러 단축키는 슬레이브 쓰는 중엔 안 가로챔 → 일반 키처럼 Slave 로 forward
+            // (슬레이브에서 넘패드 / - * 입력 가능. 다른 슬레이브로 가려면 복귀 후 이동).
             if remote {
                 if vk == SWALLOW_VK.load(Ordering::Acquire) {
                     if is_up { SWALLOW_VK.store(0, Ordering::Release); }
@@ -216,7 +228,7 @@ extern "system" fn keyboard_hook_proc(n_code: i32, wparam: WPARAM, lparam: LPARA
                 }
                 if !is_up {
                     if let Some(action) = find_hotkey(vk, current_mods()) {
-                        if action != HookAction::Mirror {
+                        if handled_while_remote(action) {
                             tracing::info!("master: 단축키 {:?} (vk={:#x}) 감지", action, vk);
                             SWALLOW_VK.store(vk, Ordering::Release);
                             master::on_hook_hotkey(action);

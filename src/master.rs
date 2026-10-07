@@ -12,7 +12,6 @@
 //
 //   Local --화면 오른쪽 끝 or hotkey_transfer------> Remote(오른쪽)
 //   Local --화면 왼쪽 끝 or hotkey_transfer_left----> Remote(왼쪽)
-//   Remote(A) --반대쪽 단축키--> Remote(B)   (A 에 RETURN_CONTROL, B 에 TAKE_CONTROL)
 //   Remote --슬레이브 RETURN_CONTROL / hotkey_return / 연결 끊김--> Local (커서 원위치)
 //
 // Mirror (Local 에서만): 마스터 + 미러 대상 슬레이브 동시 조작.
@@ -82,6 +81,8 @@ pub fn run(cfg: Config) -> Result<()> {
     }
     SHARED.edge_enabled[Side::Left.idx()].store(cfg.edge_switch_left, Ordering::Release);
     SHARED.edge_enabled[Side::Right.idx()].store(cfg.edge_switch_right, Ordering::Release);
+    SHARED.mirror_targets[Side::Left.idx()].store(cfg.mirror_left, Ordering::Release);
+    SHARED.mirror_targets[Side::Right.idx()].store(cfg.mirror_right, Ordering::Release);
 
     let mut links: [Option<PeerLink>; 2] = [None, None];
     let mut workers = Vec::new();
@@ -351,37 +352,32 @@ pub fn transfer_by_edge(side: Side, entry_y_pct: u8) {
     transfer_to_remote(side, master_wall(side), entry_y_pct);
 }
 
-/// 왼쪽/오른쪽 단축키 (RegisterHotKey 또는 Remote 중 LL 훅).
+/// 왼쪽/오른쪽 단축키 (RegisterHotKey).
 ///   Local          → 그 슬레이브로 전환 (커서는 화면 중앙)
 ///   Local + Mirror → 그 슬레이브를 미러 대상에 넣기/빼기
-///   Remote         → 그 슬레이브로 바로 전환 (마스터 안 거침)
+///   Remote         → 아무것도 안 함 (훅이 안 가로채서 보통은 슬레이브에 그냥 입력됨.
+///                    forward_keyboard = false 일 때만 여기로 옴)
 pub fn on_side_hotkey(side: Side) {
     if !SHARED.enabled.load(Ordering::Acquire) { return; }
     if SHARED.mirror.load(Ordering::Acquire) {
         toggle_mirror_target(side);
         return;
     }
-    match SHARED.get() {
-        MasterState::Local => {
-            if check_peer(side) {
-                transfer_to_remote(side, tcp::SIDE_CENTER, 50);
-            }
-        }
-        MasterState::Remote => switch_remote(side),
+    if SHARED.get() == MasterState::Local && check_peer(side) {
+        transfer_to_remote(side, tcp::SIDE_CENTER, 50);
     }
 }
 
-/// Remote 중 LL 훅이 감지한 단축키.
+/// Remote 중 LL 훅이 감지한 단축키 (hooks::handled_while_remote 인 것만 옴).
 pub fn on_hook_hotkey(action: HookAction) {
     match action {
         HookAction::Return => force_return_to_local(),
-        HookAction::Left   => on_side_hotkey(Side::Left),
-        HookAction::Right  => on_side_hotkey(Side::Right),
         HookAction::Edge   => toggle_edge(),
         HookAction::EdgeLeft  => toggle_edge_side(Side::Left),
         HookAction::EdgeRight => toggle_edge_side(Side::Right),
         HookAction::Toggle => toggle_enabled(),
-        HookAction::Mirror => {}
+        // 슬레이브 쓰는 중엔 슬레이브에 그냥 입력되는 키
+        HookAction::Left | HookAction::Right | HookAction::Mirror => {}
     }
 }
 
@@ -410,20 +406,6 @@ fn transfer_to_remote(side: Side, entry_side: u8, entry_y_pct: u8) {
     SHARED.set_active(side);
     SHARED.set(MasterState::Remote);
     tracing::info!("master: Local → Remote({}) (entry={}, y_pct={})", side.label(), entry_side, entry_y_pct);
-}
-
-/// Remote 상태에서 다른 슬레이브로 바로 이동. 커서 락/훅은 그대로 유지.
-fn switch_remote(to: Side) {
-    let from = SHARED.active();
-    if from == to { return; }
-    if !check_peer(to) { return; }
-
-    // 이전 슬레이브에 눌린 채 남은 키/버튼 떼고 Idle 로.
-    crate::input::capture::release_held(from);
-    send_tcp(from, Frame::new(MSG_RETURN_CONTROL));
-    send_tcp(to, Frame::take_control(tcp::SIDE_CENTER, 50, master_wall(to)));
-    SHARED.set_active(to);
-    tracing::info!("master: Remote({}) → Remote({})", from.label(), to.label());
 }
 
 /// Remote → Local. notify_slave: 슬레이브에 RETURN_CONTROL 을 보낼지

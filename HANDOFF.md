@@ -71,15 +71,16 @@ cursorlink/
 
 ## 4. 설정 / 단축키
 
-설정 설명은 `config.example.toml` 주석 참고. 핵심:
+설정 설명은 `config.example.toml` 주석 참고. 이 파일은 `include_str!` 로 exe 에 내장돼서
+첫 실행 때 (exe 옆에 config.toml 이 없으면) 주석 그대로 config.toml 로 만들어짐. 핵심:
 - 마스터 `peer_ip` = 오른쪽 슬레이브, `left_peer_ip` = 왼쪽 슬레이브 (빈 문자열 = 없음)
 - 슬레이브 `peer_ip` = 마스터
 - 단축키 파싱: `+` 가 구분자라 numpad + 는 `numplus` 로 씀
 
 | 단축키 | Local | Remote (슬레이브 조작 중) | Local + Mirror |
 |---|---|---|---|
-| hotkey_transfer_left | 왼쪽으로 (중앙 진입) | 왼쪽으로 바로 | 왼쪽 미러 대상 넣기/빼기 |
-| hotkey_transfer | 오른쪽으로 (중앙 진입) | 오른쪽으로 바로 | 오른쪽 미러 대상 넣기/빼기 |
+| hotkey_transfer_left | 왼쪽으로 (중앙 진입) | 일반 키 (슬레이브로 forward) | 왼쪽 미러 대상 넣기/빼기 |
+| hotkey_transfer | 오른쪽으로 (중앙 진입) | 일반 키 (슬레이브로 forward) | 오른쪽 미러 대상 넣기/빼기 |
 | hotkey_return | 일반 키 | 마스터 복귀 | 일반 키 |
 | hotkey_mirror | 미러 ON | 일반 키 (슬레이브로 forward) | 미러 OFF |
 | hotkey_edge_toggle | 쓸어넘기기 양쪽 on/off | 〃 | 〃 |
@@ -89,6 +90,8 @@ cursorlink/
 - Local / Mirror 에선 `RegisterHotKey` 로 받음.
 - Remote 에선 LL 훅이 키를 소비해서 RegisterHotKey 가 안 불림 → 같은 단축키를 훅 테이블에도 넣어
   훅 안에서 (modifier 직접 추적해서) 매칭. 처리한 키의 오토리피트/떼기는 조용히 소비.
+  Remote 에서 훅이 처리하는 건 복귀 / 쓸어넘기기 / toggle 만 (`hooks::handled_while_remote`).
+  이동·미러 키는 슬레이브에 일반 키로 보냄 → 슬레이브끼리 바로 이동은 없음 (v0.2.2 에서 제거, 넘패드 입력 우선).
 - 쓸어넘기기는 왼쪽/오른쪽 따로 on/off (`MasterShared::edge_enabled[side]`, 시작값 `edge_switch_left/right`).
   양쪽 토글은 하나라도 켜져 있으면 다 끄고, 다 꺼져 있으면 다 켬.
 - 쓸어넘기기 off 는 마스터 → 슬레이브 방향만 막음. 슬레이브 → 마스터 복귀 (벽) 는 항상 동작.
@@ -101,15 +104,14 @@ cursorlink/
 ```
 Local     ──화면 오른쪽 끝 / hotkey_transfer──────▶  Remote(오른쪽)  (TAKE_CONTROL, 커서 락+숨김, 훅 install)
 Local     ──화면 왼쪽 끝 / hotkey_transfer_left───▶  Remote(왼쪽)
-Remote(A) ──반대쪽 단축키──▶ Remote(B)   (A 에 눌린 키 떼기 + RETURN_CONTROL, B 에 TAKE_CONTROL)
 Remote    ──RETURN_CONTROL / hotkey_return / 연결 끊김──▶ Local (커서 언락+원위치, 훅 uninstall)
 ```
 - 상태 전환은 전부 메인 스레드에서만 (커서/훅 API 가 스레드에 묶임).
   TCP 스레드는 `PostMessage(WM_PEER_UP / DOWN / RETURN)` 로 메인 스레드에 넘김.
-- 슬레이브를 떠날 때 (복귀/전환/미러 해제) 그 슬레이브에 눌린 채인 키/버튼 key-up 전송 (stuck key 방지).
+- 슬레이브를 떠날 때 (복귀/미러 해제) 그 슬레이브에 눌린 채인 키/버튼 key-up 전송 (stuck key 방지).
 
 **Mirror (Local 에서만):** 마스터 + 미러 대상 슬레이브 동시 조작.
-- 미러 대상은 슬레이브별 on/off, 미러 끈 뒤에도 기억. 다 빼놓고 켜면 양쪽으로 리셋.
+- 미러 대상은 슬레이브별 on/off, 미러 끈 뒤에도 기억 (시작값 `mirror_left/right`). 다 빼놓고 켜면 양쪽으로 리셋.
 - 커서는 화면 비율 (MousePos 패킷) 로 동기화, 키는 훅에서 forward (소비 X).
 
 **상태머신 (Slave):**

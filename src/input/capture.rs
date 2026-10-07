@@ -53,7 +53,7 @@ static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
 const EDGE_GRACE_MS: u128 = 3000;
 
 /// Slave 로 눌림을 보냈는데 아직 안 뗀 키 (bit = scan + ext*256) / 마우스 버튼 (bit = MB_*).
-/// 슬레이브를 떠날 때 (복귀/전환/미러 해제) key-up 을 보내 stuck key 방지.
+/// 슬레이브를 떠날 때 (복귀/미러 해제) key-up 을 보내 stuck key 방지.
 static HELD_KEYS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
 static HELD_BTNS: AtomicU32 = AtomicU32::new(0);
 
