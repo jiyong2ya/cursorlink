@@ -107,12 +107,21 @@ unsafe fn register_hotkeys(hwnd: HWND, cfg: &Config) {
         }
         hooks::set_hotkey(action, hotkey::pack_for_hook(spec));
     }
-    // return 은 Remote 중에만 의미 있음 → RegisterHotKey 안 하고 훅에서만 감지.
-    // (Local 에선 일반 키로 그대로 쓸 수 있음)
-    let ret = hotkey::pack_for_hook(&cfg.hotkey_return);
-    hooks::set_hotkey(HookAction::Return, ret);
-    if ret != 0 {
-        tracing::info!("master: return 단축키 {} 등록 (LL 훅에서 감지)", cfg.hotkey_return);
+    // 아래 키들은 특정 상태에서만 의미 있음 → RegisterHotKey 안 하고 훅에서만 감지.
+    // 그 상태가 아닐 땐 일반 키로 그대로 쓸 수 있음.
+    //   return       : 슬레이브 쓰는 중에만 (마스터로 복귀)
+    //   mirror_left/right : 미러 중에만 (그 슬레이브 미러에서 빼기/넣기)
+    let hook_only = [
+        (HookAction::Return,      "복귀 (슬레이브 쓰는 중)",        &cfg.hotkey_return),
+        (HookAction::MirrorLeft,  "미러 왼쪽 빼기/넣기 (미러 중)",   &cfg.hotkey_mirror_left),
+        (HookAction::MirrorRight, "미러 오른쪽 빼기/넣기 (미러 중)", &cfg.hotkey_mirror_right),
+    ];
+    for (action, name, spec) in hook_only {
+        let packed = hotkey::pack_for_hook(spec);
+        hooks::set_hotkey(action, packed);
+        if packed != 0 {
+            tracing::info!("master: {} 단축키 {} 등록 (LL 훅에서 감지)", name, spec);
+        }
     }
 }
 

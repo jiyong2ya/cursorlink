@@ -40,16 +40,24 @@ fn main() -> Result<()> {
         cfg.mode, cfg.peer_ip, cfg.left_peer_ip, cfg.udp_port, cfg.tcp_port
     );
 
-    // 자동시작 동기화 (config.autostart 에 맞춰 레지스트리 업데이트)
     #[cfg(windows)]
     {
-        let want = cfg.autostart;
-        let is  = autostart::is_enabled();
-        if want && !is {
-            if let Err(e) = autostart::enable() { tracing::warn!("autostart 활성화 실패: {}", e); }
-        } else if !want && is {
-            if let Err(e) = autostart::disable() { tracing::warn!("autostart 비활성화 실패: {}", e); }
+        // run_as_admin: 관리자 권한이 아니면 관리자로 다시 실행하고 이 프로세스는 끝냄
+        // (포트 열기 전이라 겹칠 일 없음). 확인창에서 "아니요" 면 일반 권한으로 계속.
+        if cfg.run_as_admin && !autostart::is_elevated() {
+            match autostart::relaunch_elevated() {
+                Ok(()) => {
+                    tracing::info!("관리자 권한으로 다시 실행함 → 이 프로세스는 종료");
+                    return Ok(());
+                }
+                Err(e) => tracing::warn!("관리자 권한 실행 안 됨 (취소?) → 일반 권한으로 계속: {:#}", e),
+            }
         }
+        let elevated = autostart::is_elevated();
+        tracing::info!("관리자 권한: {}", if elevated { "예" } else { "아니요" });
+
+        // 자동시작 동기화 (autostart / run_as_admin 에 맞춰 레지스트리 or 작업 스케줄러)
+        autostart::sync(cfg.autostart, cfg.run_as_admin, elevated);
     }
 
     let r = match cfg.mode {

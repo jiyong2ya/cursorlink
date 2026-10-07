@@ -33,6 +33,7 @@
 - **배포:** 로컬에서 `cargo build --release` → GitHub Releases 에 `cursorlink.exe` 첨부.
   슬레이브 PC 는 Releases 에서 exe 받아서 씀. CI 없음.
 - 마스터 PC 는 `target\release\cursorlink.exe` 를 직접 실행 (autostart 레지스트리도 이 경로).
+  슬레이브는 `run_as_admin = true` 권장 (아래 6절).
   실행 중이면 exe 가 잠겨서 `cargo build --release` 가 링크 단계에서 실패 → 종료 후 빌드하거나
   `CARGO_TARGET_DIR` 을 다른 곳으로.
 
@@ -83,6 +84,7 @@ cursorlink/
 | hotkey_transfer | 오른쪽으로 (중앙 진입) | 일반 키 (슬레이브로 forward) | 오른쪽 미러 대상 넣기/빼기 |
 | hotkey_return | 일반 키 | 마스터 복귀 | 일반 키 |
 | hotkey_mirror | 미러 ON | 일반 키 (슬레이브로 forward) | 미러 OFF |
+| hotkey_mirror_left / _right | 일반 키 | 일반 키 | 그 쪽 미러 대상 넣기/빼기 (훅 전용) |
 | hotkey_edge_toggle | 쓸어넘기기 양쪽 on/off | 〃 | 〃 |
 | hotkey_edge_left / _right | 그 쪽 쓸어넘기기만 on/off | 〃 | 〃 |
 | hotkey_toggle | 기능 on/off | 기능 off + 복귀 | 기능 off + 미러 off |
@@ -90,7 +92,10 @@ cursorlink/
 - Local / Mirror 에선 `RegisterHotKey` 로 받음.
 - Remote 에선 LL 훅이 키를 소비해서 RegisterHotKey 가 안 불림 → 같은 단축키를 훅 테이블에도 넣어
   훅 안에서 (modifier 직접 추적해서) 매칭. 처리한 키의 오토리피트/떼기는 조용히 소비.
-  Remote 에서 훅이 처리하는 건 복귀 / 쓸어넘기기 / toggle 만 (`hooks::handled_while_remote`).
+  Remote 에서 훅이 처리하는 건 복귀 / 쓸어넘기기 / toggle 만 (`hooks::handled_while_remote`),
+  Mirror 에선 미러 대상 전용 키만 (`handled_while_mirror`). 복귀·미러 대상 키는 RegisterHotKey 안 함
+  → 그 상태가 아닐 땐 일반 키. 같은 키를 상태별로 다른 기능에 써도 됨 (`find_hotkey_where`).
+  넘패드 Del (NumLock 꺼짐, 비확장) 은 매칭 때 num. 로 취급, 일반 Delete (확장) 는 del.
   이동·미러 키는 슬레이브에 일반 키로 보냄 → 슬레이브끼리 바로 이동은 없음 (v0.2.2 에서 제거, 넘패드 입력 우선).
 - 쓸어넘기기는 왼쪽/오른쪽 따로 on/off (`MasterShared::edge_enabled[side]`, 시작값 `edge_switch_left/right`).
   양쪽 토글은 하나라도 켜져 있으면 다 끄고, 다 꺼져 있으면 다 켬.
@@ -160,6 +165,14 @@ Active        ──RETURN_CONTROL (마스터)──▶ Idle
 
 - **슬레이브 연결 안 됨:** 트레이 메뉴에 슬레이브별 연결 상태 표시. peer 주소 / 방화벽 (46011/UDP, 46012/TCP) / `shared_secret` 확인.
   노트북 등에서 네트워크가 "공용" 이면 방화벽 허용이 개인 네트워크에만 걸려 막힐 수 있음 → 네트워크를 개인으로.
+- **슬레이브 팝업에서 클릭/키가 안 먹음:** 두 종류.
+  1) 관리자 권한 프로그램 창 (UIPI: 낮은 권한 프로세스의 SendInput 은 높은 권한 창에 안 들어감)
+     → 슬레이브 `run_as_admin = true`. autostart 와 같이 켜면 작업 스케줄러 ("cursorlink" 작업,
+     로그온 시 가장 높은 권한) 로 확인창 없이 관리자 실행 (`autostart::sync`). HKCU\Run 은 관리자로 못 띄움.
+     작업 XML 은 배터리/3일 제한/우선순위 기본값을 직접 덮어씀 (`autostart::task_xml`).
+  2) 보안 데스크톱 (UAC 확인창, 잠금화면, Ctrl+Alt+Del) → 관리자 권한으로도 불가 (SYSTEM + Winlogon
+     데스크톱 필요 = Input Director 등이 쓰는 서비스 방식). 지금은 watchdog 이 마스터로 자동 복귀만 함.
+     실사용 우회: 슬레이브 UAC 를 "알리지 않음" + 화면 잠금 끄기.
 - **노트북 덮개 닫기 / 절전:** TCP 는 이걸 바로 알려주지 않음. 양쪽 다 하트비트 (3초) 가 10초 (`tcp::PEER_TIMEOUT`) 동안
   안 오면 끊김 처리 → 그 슬레이브를 조작 중이었으면 마스터로 자동 복귀, 3초마다 재연결 시도.
 - **단축키 안 먹음:** 로그에 `RegisterHotKey ... 실패` → 다른 프로그램 (또는 cursorlink 가 두 번 실행) 이 같은 키 사용 중.

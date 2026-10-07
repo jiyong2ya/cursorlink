@@ -30,6 +30,12 @@ cargo build --release
    - `shared_secret` 은 모든 PC 동일
 3. `cursorlink.exe` 실행 (모든 PC), 방화벽 팝업 → 개인 네트워크 허용
 
+### 슬레이브: 관리자 권한 실행 (권장)
+슬레이브 config 에 `run_as_admin = true` (+ `autostart = true`).
+관리자 권한 프로그램 창 (설치 프로그램, 작업관리자 등) 에서도 공유 마우스/키보드가 먹힘.
+처음 실행할 때 UAC 확인창 한 번, 이후 로그인 때는 작업 스케줄러로 확인창 없이 관리자 실행.
+UAC 확인창 ("예/아니요") 과 잠금화면은 이걸로도 조작 안 됨 → 슬레이브 UAC 를 "알리지 않음" 으로.
+
 ## 단축키 (config.toml)
 
 | 설정 | 예 | 마스터 사용 중 | 슬레이브 사용 중 | 미러 중 |
@@ -38,6 +44,7 @@ cargo build --release
 | `hotkey_transfer` | `num-` | 오른쪽 슬레이브로 | (슬레이브에 일반 키) | 오른쪽 미러 넣기/빼기 |
 | `hotkey_return` | `num.` | (일반 키) | 마스터로 복귀 | (일반 키) |
 | `hotkey_mirror` | `num*` | 미러 켜기 | (슬레이브에 일반 키) | 미러 끄기 |
+| `hotkey_mirror_left` / `_right` | `del` | (일반 키) | (일반 키) | 그 쪽 미러 넣기/빼기 전용 |
 | `hotkey_edge_toggle` | `numplus` | 쓸어넘기기 양쪽 on/off | 〃 | 〃 |
 | `hotkey_edge_left` | `ctrl+num/` | 왼쪽 쓸어넘기기만 on/off | 〃 | 〃 |
 | `hotkey_edge_right` | `ctrl+num-` | 오른쪽 쓸어넘기기만 on/off | 〃 | 〃 |

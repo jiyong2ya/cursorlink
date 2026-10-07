@@ -368,7 +368,9 @@ pub fn on_side_hotkey(side: Side) {
     }
 }
 
-/// Remote 중 LL 훅이 감지한 단축키 (hooks::handled_while_remote 인 것만 옴).
+/// LL 훅이 감지한 단축키.
+///   Remote 중: 복귀 / 쓸어넘기기 / toggle (hooks::handled_while_remote)
+///   Mirror 중: 미러 대상 전용 키 (hooks::handled_while_mirror)
 pub fn on_hook_hotkey(action: HookAction) {
     match action {
         HookAction::Return => force_return_to_local(),
@@ -376,7 +378,9 @@ pub fn on_hook_hotkey(action: HookAction) {
         HookAction::EdgeLeft  => toggle_edge_side(Side::Left),
         HookAction::EdgeRight => toggle_edge_side(Side::Right),
         HookAction::Toggle => toggle_enabled(),
-        // 슬레이브 쓰는 중엔 슬레이브에 그냥 입력되는 키
+        HookAction::MirrorLeft  => toggle_mirror_target(Side::Left),
+        HookAction::MirrorRight => toggle_mirror_target(Side::Right),
+        // 훅이 안 가로채는 키 (RegisterHotKey 로 처리 or 슬레이브에 그냥 입력)
         HookAction::Left | HookAction::Right | HookAction::Mirror => {}
     }
 }

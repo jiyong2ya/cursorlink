@@ -7,7 +7,7 @@
 //  2. Remote 중 단축키 감지. 훅이 키를 소비하면 RegisterHotKey 가 안 불리므로
 //     (복귀 / 쓸어넘기기 양쪽·왼쪽·오른쪽 / toggle) 를 여기서 직접 매칭.
 //     왼쪽/오른쪽 이동·미러 키는 슬레이브에 그냥 입력되게 둠 (handled_while_remote).
-//  3. Mirror 중 키보드를 Slave 로 forward (소비는 안 함).
+//  3. Mirror 중 키보드를 Slave 로 forward (소비는 안 함). 미러 대상 전용 키만 여기서 처리 + 소비.
 //
 // 소비 조건: enabled && state == Remote (Mirror 아님)
 // 그 외: CallNextHookEx 로 정상 전달.
@@ -50,19 +50,33 @@ pub enum HookAction {
     Return    = 5,
     EdgeLeft  = 6,
     EdgeRight = 7,
+    /// 미러 중에만: 왼쪽/오른쪽 슬레이브를 미러에서 빼기/넣기 (RegisterHotKey 안 함, 평소엔 일반 키)
+    MirrorLeft  = 8,
+    MirrorRight = 9,
 }
 
-const ACTIONS: [HookAction; 8] = [
+const ACTIONS: [HookAction; 10] = [
     HookAction::Toggle, HookAction::Mirror, HookAction::Left, HookAction::Right,
     HookAction::Edge, HookAction::Return, HookAction::EdgeLeft, HookAction::EdgeRight,
+    HookAction::MirrorLeft, HookAction::MirrorRight,
 ];
 
 /// 단축키 테이블 (HookAction as usize 로 인덱싱).
 /// 값 = (modifiers << 16) | vk  (hotkey::pack_for_hook), 0 = 미설정.
-static HOTKEYS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
+static HOTKEYS: [AtomicU32; 10] = [const { AtomicU32::new(0) }; 10];
 
-/// Remote 중 단축키로 처리한 키. 오토리피트/떼기를 조용히 소비하기 위해 기억.
+/// 훅이 단축키로 처리한 키 (Remote / Mirror 중). 오토리피트/떼기를 조용히 소비하기 위해 기억.
 static SWALLOW_VK: AtomicU32 = AtomicU32::new(0);
+
+// 넘패드 . 키는 NumLock 이 꺼져 있으면 Del (VK_DELETE, 확장 플래그 없음) 로 들어옴.
+// 단축키 매칭에선 num. (VK_DECIMAL) 로 취급 → NumLock 상관없이 같은 키.
+// 일반 Delete 키는 확장 플래그가 있어서 그대로 del.
+const VK_DELETE_RAW: u32 = 0x2E;
+const VK_DECIMAL_RAW: u32 = 0x6E;
+
+fn hotkey_vk(vk: u32, is_ext: bool) -> u32 {
+    if vk == VK_DELETE_RAW && !is_ext { VK_DECIMAL_RAW } else { vk }
+}
 
 /// 훅이 본 modifier 눌림 상태 (L/R 구분 비트). Remote 중엔 훅이 키를 소비해서
 /// GetAsyncKeyState 가 갱신 안 되므로 직접 추적.
@@ -80,11 +94,13 @@ pub fn set_hotkey(action: HookAction, packed: u32) {
     HOTKEYS[action as usize].store(packed, Ordering::Release);
 }
 
-fn find_hotkey(vk: u32, mods: u32) -> Option<HookAction> {
+/// (vk, mods) 와 같은 단축키 중 pred 를 만족하는 첫 번째.
+/// 같은 키를 상태별로 다른 기능에 써도 되게 (예: num. = 슬레이브 중 복귀, 미러 중 왼쪽 빼기) 상태로 거름.
+fn find_hotkey_where(vk: u32, mods: u32, pred: fn(HookAction) -> bool) -> Option<HookAction> {
     let key = (mods << 16) | vk;
     ACTIONS.into_iter().find(|a| {
         let v = HOTKEYS[*a as usize].load(Ordering::Acquire);
-        v != 0 && v == key
+        v != 0 && v == key && pred(*a)
     })
 }
 
@@ -98,11 +114,22 @@ fn handled_while_remote(action: HookAction) -> bool {
     )
 }
 
+/// 미러 중에 훅이 가로채서 처리하는 단축키 (미러 대상 전용 키).
+/// 나머지 단축키 (num/ num- num* 등) 는 RegisterHotKey 로 Master 가 처리.
+fn handled_while_mirror(action: HookAction) -> bool {
+    matches!(action, HookAction::MirrorLeft | HookAction::MirrorRight)
+}
+
+/// RegisterHotKey 로 등록되는 단축키 (훅에서만 감지하는 복귀/미러 대상 키 제외).
+fn is_registered(action: HookAction) -> bool {
+    !matches!(action, HookAction::Return | HookAction::MirrorLeft | HookAction::MirrorRight)
+}
+
 /// Mirror 중 Slave 로 안 보낸 단축키. 떼짐도 같이 안 보내려고 기억.
 static MIRROR_SKIP_VK: AtomicU32 = AtomicU32::new(0);
 
 /// Mirror 중 이 키 이벤트를 Slave 로 보내지 말아야 하는지.
-/// RegisterHotKey 로 Master 가 처리하는 단축키 (Return 제외 — 등록 안 된 일반 키) 만 해당.
+/// RegisterHotKey 로 Master 가 처리하는 단축키만 해당 (복귀 키 등 등록 안 된 키는 일반 키).
 fn mirror_should_skip(vk: u32, is_up: bool) -> bool {
     if is_up {
         if vk == MIRROR_SKIP_VK.load(Ordering::Acquire) {
@@ -111,12 +138,11 @@ fn mirror_should_skip(vk: u32, is_up: bool) -> bool {
         }
         return false;
     }
-    match find_hotkey(vk, current_mods()) {
-        Some(a) if a != HookAction::Return => {
-            MIRROR_SKIP_VK.store(vk, Ordering::Release);
-            true
-        }
-        _ => false,
+    if find_hotkey_where(vk, current_mods(), is_registered).is_some() {
+        MIRROR_SKIP_VK.store(vk, Ordering::Release);
+        true
+    } else {
+        false
     }
 }
 
@@ -216,24 +242,27 @@ extern "system" fn keyboard_hook_proc(n_code: i32, wparam: WPARAM, lparam: LPARA
 
             let mirror = is_mirror_active();
             let remote = is_remote_active() && !mirror;
+            // 단축키 매칭용 vk (넘패드 Del → num.)
+            let hk_vk = hotkey_vk(vk, is_ext);
 
-            // Remote 중 단축키: Slave 로 안 보내고 여기서 처리 + 소비.
+            // 훅이 직접 처리하는 단축키: Slave 로 안 보내고 여기서 처리 + 소비.
             // 눌림에서 한 번만 실행하고, 오토리피트/떼기는 조용히 소비.
-            // 왼쪽/오른쪽 이동·미러 단축키는 슬레이브 쓰는 중엔 안 가로챔 → 일반 키처럼 Slave 로 forward
-            // (슬레이브에서 넘패드 / - * 입력 가능. 다른 슬레이브로 가려면 복귀 후 이동).
-            if remote {
-                if vk == SWALLOW_VK.load(Ordering::Acquire) {
+            //   Remote: 복귀 / 쓸어넘기기 / toggle. 이동·미러 키는 안 가로챔 → 슬레이브에 그냥 입력
+            //           (슬레이브에서 넘패드 / - * 입력 가능. 다른 슬레이브로 가려면 복귀 후 이동).
+            //   Mirror: 미러 대상 전용 키 (hotkey_mirror_left/right). 미러 아닐 땐 일반 키로 동작.
+            if remote || mirror {
+                if hk_vk == SWALLOW_VK.load(Ordering::Acquire) {
                     if is_up { SWALLOW_VK.store(0, Ordering::Release); }
                     return LRESULT(1);
                 }
                 if !is_up {
-                    if let Some(action) = find_hotkey(vk, current_mods()) {
-                        if handled_while_remote(action) {
-                            tracing::info!("master: 단축키 {:?} (vk={:#x}) 감지", action, vk);
-                            SWALLOW_VK.store(vk, Ordering::Release);
-                            master::on_hook_hotkey(action);
-                            return LRESULT(1);
-                        }
+                    let pred: fn(HookAction) -> bool =
+                        if remote { handled_while_remote } else { handled_while_mirror };
+                    if let Some(action) = find_hotkey_where(hk_vk, current_mods(), pred) {
+                        tracing::info!("master: 단축키 {:?} (vk={:#x}) 감지", action, vk);
+                        SWALLOW_VK.store(hk_vk, Ordering::Release);
+                        master::on_hook_hotkey(action);
+                        return LRESULT(1);
                     }
                 }
             }
@@ -242,7 +271,7 @@ extern "system" fn keyboard_hook_proc(n_code: i32, wparam: WPARAM, lparam: LPARA
             if FORWARD_KEYBOARD.load(Ordering::Acquire) {
                 // Mirror 중엔 단축키 (num/ num- num* 등) 를 Slave 로 안 보냄.
                 // 통과시켜서 RegisterHotKey 로 Master 가 처리.
-                let skip = mirror && mirror_should_skip(vk, is_up);
+                let skip = mirror && mirror_should_skip(hk_vk, is_up);
                 if (remote || mirror) && scan != 0 && !skip {
                     crate::input::capture::send_key(scan, !is_up, is_ext);
                 }
@@ -273,4 +302,32 @@ fn is_mirror_active() -> bool {
         return false;
     }
     master::SHARED.mirror.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_vs_numpad_del() {
+        // 일반 Delete (확장키) 는 del 그대로, 넘패드 Del (NumLock 꺼짐) 은 num. 로
+        assert_eq!(hotkey_vk(VK_DELETE_RAW, true), VK_DELETE_RAW);
+        assert_eq!(hotkey_vk(VK_DELETE_RAW, false), VK_DECIMAL_RAW);
+        assert_eq!(hotkey_vk(VK_DECIMAL_RAW, false), VK_DECIMAL_RAW);
+    }
+
+    #[test]
+    fn same_key_by_state() {
+        // num. 을 복귀 (슬레이브 중) 와 미러 왼쪽 (미러 중) 에 같이 써도 상태별로 갈림
+        set_hotkey(HookAction::Return, VK_DECIMAL_RAW);
+        set_hotkey(HookAction::MirrorLeft, VK_DECIMAL_RAW);
+        assert_eq!(find_hotkey_where(VK_DECIMAL_RAW, 0, handled_while_remote), Some(HookAction::Return));
+        assert_eq!(find_hotkey_where(VK_DECIMAL_RAW, 0, handled_while_mirror), Some(HookAction::MirrorLeft));
+        // modifier 가 다르면 매칭 안 됨
+        assert_eq!(find_hotkey_where(VK_DECIMAL_RAW, 2, handled_while_remote), None);
+        // 훅 전용 키는 미러 중 forward 제외 대상 (RegisterHotKey) 이 아님
+        assert!(!is_registered(HookAction::MirrorLeft) && !is_registered(HookAction::Return));
+        set_hotkey(HookAction::Return, 0);
+        set_hotkey(HookAction::MirrorLeft, 0);
+    }
 }

@@ -58,6 +58,10 @@ pub struct Config {
     pub hotkey_return: String,
     #[serde(default)]
     pub autostart: bool,
+    /// 관리자 권한으로 실행 (슬레이브 권장). 관리자 권한 프로그램 창에도 입력이 들어감.
+    /// autostart 와 같이 켜면 작업 스케줄러로 로그온 시 확인창 없이 관리자 실행.
+    #[serde(default)]
+    pub run_as_admin: bool,
     /// Remote 상태에서 키보드 입력을 Slave 로 전송할지.
     /// false 면 마우스만 넘기고 키보드는 각 PC 가 각자 처리 (Slave 에 게임 켜져있을 때 유용).
     #[serde(default = "default_forward_keyboard")]
@@ -67,6 +71,12 @@ pub struct Config {
     pub mirror_left: bool,
     #[serde(default = "default_true")]
     pub mirror_right: bool,
+    /// 미러 중에만 동작하는 미러 대상 빼기/넣기 전용 키 (미러 아닐 땐 일반 키).
+    /// 비우면 이동 키 (hotkey_transfer_left / hotkey_transfer) 로만 빼기/넣기.
+    #[serde(default)]
+    pub hotkey_mirror_left: String,
+    #[serde(default)]
+    pub hotkey_mirror_right: String,
 }
 
 /// 첫 실행 때 쓰는 설정 템플릿 (주석 포함). exe 에 내장돼서 exe 하나만 배포해도 됨.
@@ -171,6 +181,9 @@ mod tests {
         assert_eq!(cfg.hotkey_edge_left, "ctrl+num/");
         assert!(cfg.edge_switch_left && cfg.edge_switch_right);
         assert!(cfg.mirror_left && cfg.mirror_right);
+        assert_eq!(cfg.hotkey_mirror_left, "");
+        assert_eq!(cfg.hotkey_mirror_right, "");
+        assert!(!cfg.run_as_admin);
     }
 
     #[test]
