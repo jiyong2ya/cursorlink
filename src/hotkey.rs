@@ -2,10 +2,13 @@
 //
 // 두 가지 사용:
 //   1) 이미 있는 hidden window 에 hotkey 만 등록 (master 는 capture.rs 의 창을 그대로 사용)
-//      → register_toggle(hwnd, spec)
+//      → register_toggle / register_optional
 //   2) 자체 hidden window + 스레드 필요 (slave 는 UDP 루프에 갇혀 있음)
 //      → spawn_window_thread(spec, tooltip, on_toggle, get_enabled)
 //        새 스레드가 hidden window 하나 만들어서 hotkey + tray 를 모두 처리.
+//
+// Master 가 Remote 인 동안엔 LL 훅이 키를 소비해서 RegisterHotKey 가 안 불림.
+// 그래서 같은 단축키를 pack_for_hook 으로 압축해 hooks.rs 에도 넘겨서 훅 안에서 매칭.
 
 #![cfg(windows)]
 
@@ -17,30 +20,21 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 pub const HOTKEY_ID_TOGGLE: i32 = 1;
 pub const HOTKEY_ID_MIRROR: i32 = 2;
+/// 오른쪽 슬레이브로 전환 (미러 중엔 오른쪽 미러 대상 넣기/빼기)
 pub const HOTKEY_ID_TRANSFER: i32 = 3;
+/// 왼쪽 슬레이브로 전환 (미러 중엔 왼쪽 미러 대상 넣기/빼기)
+pub const HOTKEY_ID_TRANSFER_LEFT: i32 = 4;
+/// 쓸어넘기기 on/off
+pub const HOTKEY_ID_EDGE: i32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeySpec {
     #[serde(default = "default_hotkey")]
     pub toggle: String,
-    /// Mirror 모드 토글 단축키. 빈 문자열이면 Mirror 기능 비활성.
-    #[serde(default)]
-    pub mirror: String,
-    /// Local → Remote 즉시 전환 (Slave 커서는 화면 중앙).
-    #[serde(default)]
-    pub transfer: String,
-    /// Remote → Local 복귀. LL 훅 안에서 감지되므로 RegisterHotKey 대신 VK 를 그대로 파싱해서 씀.
-    #[serde(default)]
-    pub return_hotkey: String,
 }
 
 impl Default for HotkeySpec {
-    fn default() -> Self { Self {
-        toggle: default_hotkey(),
-        mirror: String::new(),
-        transfer: String::new(),
-        return_hotkey: String::new(),
-    } }
+    fn default() -> Self { Self { toggle: default_hotkey() } }
 }
 
 fn default_hotkey() -> String { "ctrl+alt+shift+k".to_string() }
@@ -55,43 +49,32 @@ pub fn register_toggle(hwnd: HWND, spec: &HotkeySpec) -> Result<()> {
     Ok(())
 }
 
-pub fn register_mirror(hwnd: HWND, spec: &HotkeySpec) -> Result<()> {
-    if spec.mirror.trim().is_empty() {
+/// 선택적 단축키 등록. 빈 문자열이면 아무것도 안 함.
+pub fn register_optional(hwnd: HWND, id: i32, name: &str, spec: &str) -> Result<()> {
+    if spec.trim().is_empty() {
         return Ok(());
     }
-    let (mods, vk) = parse_hotkey(&spec.mirror)?;
+    let (mods, vk) = parse_hotkey(spec)?;
     unsafe {
-        RegisterHotKey(hwnd, HOTKEY_ID_MIRROR, mods, vk as u32)
-            .map_err(|e| anyhow::anyhow!("RegisterHotKey mirror 실패 ({}): {}", spec.mirror, e))?;
+        RegisterHotKey(hwnd, id, mods, vk as u32)
+            .map_err(|e| anyhow::anyhow!("RegisterHotKey {} 실패 ({}): {}", name, spec, e))?;
     }
-    tracing::info!("전역 단축키 등록 (mirror): {}", spec.mirror);
+    tracing::info!("전역 단축키 등록 ({}): {}", name, spec);
     Ok(())
 }
 
-pub fn register_transfer(hwnd: HWND, spec: &HotkeySpec) -> Result<()> {
-    if spec.transfer.trim().is_empty() {
-        return Ok(());
+/// 훅에서 매칭할 수 있게 (modifiers << 16) | vk 로 압축.
+/// modifiers 는 RegisterHotKey 와 같은 MOD_* 비트 (alt=1, ctrl=2, shift=4, win=8).
+/// 빈 문자열이거나 파싱 실패면 0 (= 미설정).
+pub fn pack_for_hook(spec: &str) -> u32 {
+    if spec.trim().is_empty() {
+        return 0;
     }
-    let (mods, vk) = parse_hotkey(&spec.transfer)?;
-    unsafe {
-        RegisterHotKey(hwnd, HOTKEY_ID_TRANSFER, mods, vk as u32)
-            .map_err(|e| anyhow::anyhow!("RegisterHotKey transfer 실패 ({}): {}", spec.transfer, e))?;
-    }
-    tracing::info!("전역 단축키 등록 (transfer): {}", spec.transfer);
-    Ok(())
-}
-
-/// return hotkey 는 RegisterHotKey 대신 LL 훅 안에서 VK 매칭.
-/// 여기서 parse 만 하고 VK 를 반환. 호출자가 hooks::RETURN_VK 에 저장.
-pub fn parse_return_hotkey(spec: &HotkeySpec) -> Option<u16> {
-    if spec.return_hotkey.trim().is_empty() {
-        return None;
-    }
-    match parse_hotkey(&spec.return_hotkey) {
-        Ok((_mods, vk)) => Some(vk),
+    match parse_hotkey(spec) {
+        Ok((mods, vk)) => ((mods.0 & 0xF) << 16) | vk as u32,
         Err(e) => {
-            tracing::warn!("return hotkey 파싱 실패 ({}): {}", spec.return_hotkey, e);
-            None
+            tracing::warn!("단축키 파싱 실패 ({}): {}", spec, e);
+            0
         }
     }
 }
@@ -133,7 +116,7 @@ pub fn spawn_window_thread(
 
 unsafe fn run_window_message_loop(spec: &HotkeySpec, tooltip: &str) -> Result<()> {
     use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::HINSTANCE;
     use windows::Win32::Graphics::Gdi::HBRUSH;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::*;
@@ -203,7 +186,7 @@ extern "system" fn hk_proc(
                 let enabled = GET_ENABLED.with(|s| {
                     s.borrow().as_ref().map(|f| f()).unwrap_or(true)
                 });
-                crate::tray::show_context_menu(hwnd, enabled);
+                crate::tray::show_context_menu(hwnd, enabled, &[]);
             }
             return LRESULT(0);
         }
@@ -309,8 +292,28 @@ fn parse_vk(s: &str) -> Result<u16> {
         "num-" | "numsub" | "subtract" | "numpad_subtract" => VK_SUBTRACT.0,
         "num/" | "numdiv" | "divide"   | "numpad_divide"   => VK_DIVIDE.0,
         "num." | "numdot" | "decimal"  | "numpad_decimal"  => VK_DECIMAL.0,
+        // "num+" 는 '+' 가 구분자라 파싱 불가 → numplus 로 씀
         "numplus" | "add"      | "numpad_add"      => VK_ADD.0,
         _ => return Err(anyhow::anyhow!("알 수 없는 키: {}", s)),
     };
     Ok(vk)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pack_numpad_keys() {
+        assert_eq!(pack_for_hook("num/"), VK_DIVIDE.0 as u32);
+        assert_eq!(pack_for_hook("numplus"), VK_ADD.0 as u32);
+        assert_eq!(pack_for_hook(""), 0);
+        assert_eq!(pack_for_hook("num+"), 0); // '+' 구분자라 파싱 실패 → 미설정
+    }
+
+    #[test]
+    fn pack_with_modifiers() {
+        // ctrl=2, shift=4 → 6 << 16
+        assert_eq!(pack_for_hook("ctrl+shift+k"), (6 << 16) | b'K' as u32);
+    }
 }

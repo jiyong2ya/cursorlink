@@ -12,7 +12,11 @@ pub enum Mode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub mode: Mode,
+    /// master: 오른쪽 슬레이브 주소 (빈 문자열이면 오른쪽 없음) / slave: 마스터 주소.
     pub peer_ip: String,
+    /// master 전용: 왼쪽 슬레이브 주소. 빈 문자열이면 왼쪽 없음.
+    #[serde(default)]
+    pub left_peer_ip: String,
     #[serde(default = "default_udp_port")]
     pub udp_port: u16,
     #[serde(default = "default_tcp_port")]
@@ -25,10 +29,20 @@ pub struct Config {
     /// 빈 문자열이면 Mirror 기능 비활성.
     #[serde(default)]
     pub hotkey_mirror: String,
-    /// Local → Remote (Slave) 즉시 전환 단축키. Slave 커서는 화면 중앙에 놓임.
+    /// 오른쪽 슬레이브로 즉시 전환 단축키. Slave 커서는 화면 중앙에 놓임.
+    /// 미러 중에는 오른쪽 슬레이브를 미러 대상에 넣기/빼기.
     /// 빈 문자열이면 비활성 (엣지 크로싱만 사용).
     #[serde(default)]
     pub hotkey_transfer: String,
+    /// 왼쪽 슬레이브로 즉시 전환 단축키. 미러 중에는 왼쪽 미러 대상 넣기/빼기.
+    #[serde(default)]
+    pub hotkey_transfer_left: String,
+    /// 쓸어넘기기 (마스터 화면 끝 → 슬레이브) on/off 단축키.
+    #[serde(default)]
+    pub hotkey_edge_toggle: String,
+    /// 시작 시 쓸어넘기기 사용 여부. 슬레이브 → 마스터 복귀는 항상 동작.
+    #[serde(default = "default_true")]
+    pub edge_switch: bool,
     /// Remote 상태에서 Master 로 즉시 복귀 단축키.
     /// LL 훅 안에서 감지 (Slave 로 forward 안 하고 소비).
     #[serde(default)]
@@ -43,6 +57,7 @@ pub struct Config {
 
 fn default_hotkey() -> String { "ctrl+alt+shift+k".to_string() }
 fn default_forward_keyboard() -> bool { true }
+fn default_true() -> bool { true }
 
 fn default_udp_port() -> u16 { 46011 }
 fn default_tcp_port() -> u16 { 46012 }

@@ -15,11 +15,8 @@ pub fn bind_recv(local_port: u16) -> Result<UdpSocket> {
     Ok(sock)
 }
 
-pub fn bind_send(peer: SocketAddr) -> Result<UdpSocket> {
-    // ephemeral 포트에 바인딩, connect 로 목적지 고정 → send 만 호출 가능
-    let sock = UdpSocket::bind("0.0.0.0:0")
-        .context("UDP 송신 소켓 바인딩 실패")?;
-    sock.connect(peer)
-        .with_context(|| format!("UDP connect {} 실패", peer))?;
-    Ok(sock)
+/// ephemeral 포트 송신 소켓. 목적지는 TCP 연결 시점에 connect 로 지정
+/// (peer 가 hostname 이어도 TCP 가 실제로 붙은 IP 를 그대로 씀).
+pub fn bind_send() -> Result<UdpSocket> {
+    UdpSocket::bind("0.0.0.0:0").context("UDP 송신 소켓 바인딩 실패")
 }

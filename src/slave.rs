@@ -8,7 +8,9 @@
 // 상태 전환:
 //   Disconnected --TCP accept + HELLO OK--> Idle
 //   Idle --TAKE_CONTROL 수신--> Active (커서 표시 + 진입 위치로 이동)
-//   Active --왼쪽 엣지 도달--> Idle (RETURN_CONTROL 송신 + 커서 숨김)
+//   Active --복귀 벽 도달--> Idle (RETURN_CONTROL 송신 + 커서 숨김)
+//     복귀 벽은 마스터가 TAKE_CONTROL 로 알려줌: 오른쪽 슬레이브 = 왼쪽 벽, 왼쪽 슬레이브 = 오른쪽 벽.
+//     그래서 슬레이브 config 엔 자기 위치 설정이 없음.
 //   * --TCP 끊김--> Disconnected (Idle 강제, 커서 상태 복구)
 
 use anyhow::{Context, Result};
@@ -64,12 +66,7 @@ pub fn run(cfg: Config) -> Result<()> {
         .context("watchdog 스레드 시작 실패")?;
 
     // Hotkey + Tray 스레드 (자체 hidden window)
-    let hk_spec = HotkeySpec {
-        toggle: cfg.hotkey_toggle.clone(),
-        mirror: String::new(),
-        transfer: String::new(),
-        return_hotkey: String::new(),
-    };
+    let hk_spec = HotkeySpec { toggle: cfg.hotkey_toggle.clone() };
     if let Err(e) = hotkey::spawn_window_thread(
         hk_spec,
         "cursorlink (slave)".to_string(),
@@ -105,6 +102,8 @@ fn tcp_server_loop(port: u16, secret: String, rx: crossbeam_channel::Receiver<Fr
                 // HELLO 검증
                 match tcp::read_frame(&mut sock) {
                     Ok(f) if f.msg_type() == MSG_HELLO && f.is_authenticated(&secret) => {
+                        // 새 마스터 세션 (마스터 재시작 포함) → UDP seq 가 1 부터 다시 시작하므로 리셋.
+                        crate::input::inject::reset_seq();
                         SHARED.set(SlaveState::Idle);
                         tracing::info!("slave: HELLO OK, Idle 상태");
                         run_connected(&mut sock, &rx, &tx);
@@ -141,19 +140,8 @@ fn run_connected(sock: &mut TcpStream, rx: &crossbeam_channel::Receiver<Frame>, 
         Err(e) => { tracing::warn!("writer 스레드 실패: {}", e); return; }
     };
 
-    // read timeout (configure_stream 에서 6초로 설정됨) 은 주기적 wake-up.
-    // WouldBlock/TimedOut 은 정상 idle 이므로 continue. 진짜 연결 문제만 break.
-    loop {
-        match tcp::read_frame(sock) {
-            Ok(f) => handle_incoming(f, tx),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                   || e.kind() == std::io::ErrorKind::TimedOut => continue,
-            Err(e) => {
-                tracing::warn!("slave: TCP read 오류: {}", e);
-                break;
-            }
-        }
-    }
+    // reader: 연결 오류 or 마스터 하트비트 끊김 (마스터 절전/재부팅 등) 까지 블로킹.
+    tcp::read_loop(sock, "slave:", |f| handle_incoming(f, tx));
 
     let _ = sock.shutdown(std::net::Shutdown::Both);
     let _ = writer.join();
@@ -179,8 +167,13 @@ fn handle_incoming(f: Frame, tx: &TcpTx) {
         MSG_TAKE_CONTROL => {
             let entry_side = f.payload_byte(0);
             let entry_y_pct = f.payload_byte(1);
-            tracing::info!("slave: TAKE_CONTROL 수신 (side={}, y_pct={}) → Active", entry_side, entry_y_pct);
-            enter_active(entry_side, entry_y_pct, tx);
+            // 구버전 마스터는 0 (= 왼쪽 벽 복귀) 을 보냄 → 기존 동작 그대로.
+            let return_side = f.payload_byte(2);
+            tracing::info!(
+                "slave: TAKE_CONTROL 수신 (side={}, y_pct={}, return={}) → Active",
+                entry_side, entry_y_pct, return_side
+            );
+            enter_active(entry_side, entry_y_pct, return_side, tx);
         }
         MSG_RETURN_CONTROL => {
             // Master 가 Mirror OFF 하면서 보낸 경우. Idle 로 복귀 + 커서 숨김.
@@ -256,7 +249,7 @@ fn foreground_watcher_loop(tx: TcpTx) {
 // 상태 전환 API
 // -----------------------------------------------------------------------------
 
-fn enter_active(entry_side: u8, entry_y_pct: u8, tx: &TcpTx) {
+fn enter_active(entry_side: u8, entry_y_pct: u8, return_side: u8, tx: &TcpTx) {
     if !SHARED.enabled.load(Ordering::Acquire) {
         tracing::info!("slave: TAKE_CONTROL 수신했으나 disabled → RETURN_CONTROL 자동 응답");
         let _ = tx.try_send(Frame::new(MSG_RETURN_CONTROL));
@@ -264,22 +257,27 @@ fn enter_active(entry_side: u8, entry_y_pct: u8, tx: &TcpTx) {
     }
 
     let scr = cursor::primary_screen();
-    let (entry_x, entry_y) = if entry_side == tcp::SIDE_CENTER {
-        // hotkey_transfer 로 진입: 화면 중앙.
-        (scr.left + scr.width() / 2, scr.top + scr.height() / 2)
-    } else {
-        // 엣지 크로싱 진입: 왼쪽 벽 10px 안쪽 + 지정된 세로 비율.
-        let ex = scr.left + 10;
-        let ey = scr.top + (scr.height() as i64 * entry_y_pct as i64 / 100) as i32;
-        (ex, ey)
+    let ey = scr.top + (scr.height() as i64 * entry_y_pct as i64 / 100) as i32;
+    let (entry_x, entry_y) = match entry_side {
+        // 단축키 / 미러로 진입: 화면 중앙.
+        tcp::SIDE_CENTER => (scr.left + scr.width() / 2, scr.top + scr.height() / 2),
+        // 엣지 크로싱 진입 (왼쪽 슬레이브): 오른쪽 벽 10px 안쪽 + 지정된 세로 비율.
+        tcp::SIDE_RIGHT => (scr.right - 11, ey),
+        // 엣지 크로싱 진입 (오른쪽 슬레이브): 왼쪽 벽 10px 안쪽 + 지정된 세로 비율.
+        _ => (scr.left + 10, ey),
     };
 
+    let rs = if return_side == tcp::SIDE_RIGHT { tcp::SIDE_RIGHT } else { tcp::SIDE_LEFT };
+    SHARED.return_side.store(rs, Ordering::Release);
+
     cursor::set_pos(entry_x, entry_y);
+    // 이전 세션의 낡은 X 좌표로 진입 직후 바로 복귀되는 것 방지.
+    crate::input::inject::reset_edge_baseline(entry_x);
     cursor::show();
     SHARED.set(SlaveState::Active);
 }
 
-/// 왼쪽 엣지 도달 시 호출. Active → Idle.
+/// 복귀 벽 (왼쪽 or 오른쪽) 도달 시 호출. Active → Idle.
 pub fn return_control(tx: &TcpTx) {
     if SHARED.get() != SlaveState::Active { return; }
     let _ = tx.try_send(Frame::new(MSG_RETURN_CONTROL));

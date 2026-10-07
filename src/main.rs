@@ -1,4 +1,4 @@
-// cursorlink — 두 Windows PC 간 마우스/키보드 공유
+// cursorlink — Windows PC 간 마우스/키보드 공유 (마스터 1 + 슬레이브 최대 2: 왼쪽/오른쪽)
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -36,8 +36,8 @@ fn main() -> Result<()> {
 
     let cfg = Config::load_or_default(Config::config_path())?;
     tracing::info!(
-        "cursorlink 시작 mode={:?} peer={}:{} tcp={}",
-        cfg.mode, cfg.peer_ip, cfg.udp_port, cfg.tcp_port
+        "cursorlink 시작 mode={:?} peer={} left_peer={} udp={} tcp={}",
+        cfg.mode, cfg.peer_ip, cfg.left_peer_ip, cfg.udp_port, cfg.tcp_port
     );
 
     // 자동시작 동기화 (config.autostart 에 맞춰 레지스트리 업데이트)

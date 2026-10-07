@@ -1,7 +1,8 @@
 // 트레이 아이콘.
 //
 // Shell_NotifyIcon 로 시스템 트레이에 아이콘 추가.
-// 사용자가 아이콘 우클릭 → 팝업 메뉴 (Toggle / Exit).
+// 사용자가 아이콘 우클릭 → 팝업 메뉴 (Toggle / 설정 / 로그 / Exit + master 전용 항목).
+// notify 로 짧은 알림 (Windows 10 에선 토스트) 표시.
 //
 // master/slave 의 기존 hidden window 를 재사용.
 // 트레이 아이콘의 콜백 메시지는 WM_APP+1 로 통일.
@@ -18,10 +19,22 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 pub const WM_TRAY: u32 = WM_APP + 1;
 pub const TRAY_ICON_ID: u32 = 1;
 
-pub const MENU_TOGGLE:   u32 = 100;
-pub const MENU_EXIT:     u32 = 101;
-pub const MENU_SETTINGS: u32 = 102;
-pub const MENU_LOG:      u32 = 103;
+pub const MENU_TOGGLE:       u32 = 100;
+pub const MENU_EXIT:         u32 = 101;
+pub const MENU_SETTINGS:     u32 = 102;
+pub const MENU_LOG:          u32 = 103;
+pub const MENU_EDGE:         u32 = 104;
+pub const MENU_MIRROR_LEFT:  u32 = 105;
+pub const MENU_MIRROR_RIGHT: u32 = 106;
+
+/// show_context_menu 에 추가로 넣는 항목 (master 의 연결 상태, 쓸어넘기기, 미러 대상 등).
+pub struct MenuItem {
+    /// 0 이면 클릭 안 되는 정보 표시용 (grayed 와 같이 씀)
+    pub id: u32,
+    pub label: String,
+    pub checked: bool,
+    pub grayed: bool,
+}
 
 /// 트레이 아이콘 등록 (hwnd 에 WM_TRAY 메시지 전달).
 pub fn add(hwnd: HWND, tooltip: &str) -> Result<()> {
@@ -41,11 +54,7 @@ pub fn add(hwnd: HWND, tooltip: &str) -> Result<()> {
             .unwrap_or_default();
 
         // 툴팁 (최대 127자, wide)
-        let tip: Vec<u16> = tooltip.encode_utf16().take(127).chain(Some(0)).collect();
-        for (i, ch) in tip.iter().enumerate() {
-            if i >= nid.szTip.len() { break; }
-            nid.szTip[i] = *ch;
-        }
+        copy_wide(&mut nid.szTip, tooltip);
 
         Shell_NotifyIconW(NIM_ADD, &nid).ok().map_err(|e| anyhow::anyhow!("Shell_NotifyIconW ADD: {:?}", e))?;
     }
@@ -63,9 +72,36 @@ pub fn remove(hwnd: HWND) {
     }
 }
 
+/// 트레이 알림 (Windows 10 에선 토스트). 소리 없음, 바로 못 띄우면 버림 (NIF_REALTIME).
+pub fn notify(hwnd: HWND, title: &str, msg: &str) {
+    unsafe {
+        let mut nid = NOTIFYICONDATAW::default();
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = hwnd;
+        nid.uID = TRAY_ICON_ID;
+        nid.uFlags = NIF_INFO | NIF_REALTIME;
+        nid.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
+        copy_wide(&mut nid.szInfoTitle, title);
+        copy_wide(&mut nid.szInfo, msg);
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+}
+
+/// 고정 길이 wide 버퍼에 null 종료 문자열 복사 (넘치면 자름).
+fn copy_wide(dst: &mut [u16], s: &str) {
+    let max = dst.len().saturating_sub(1);
+    let mut n = 0;
+    for ch in s.encode_utf16().take(max) {
+        dst[n] = ch;
+        n += 1;
+    }
+    if n < dst.len() { dst[n] = 0; }
+}
+
 /// 우클릭 시 팝업 메뉴 표시.
 /// enabled: 현재 기능 on/off 상태 (체크 표시용).
-pub unsafe fn show_context_menu(hwnd: HWND, enabled: bool) {
+/// extra: Toggle 바로 아래에 붙는 추가 항목 (slave 는 빈 슬라이스).
+pub unsafe fn show_context_menu(hwnd: HWND, enabled: bool, extra: &[MenuItem]) {
     let hmenu = CreatePopupMenu().unwrap_or_default();
     if hmenu.is_invalid() { return; }
 
@@ -74,6 +110,18 @@ pub unsafe fn show_context_menu(hwnd: HWND, enabled: bool) {
     let mut flags = MF_STRING;
     if enabled { flags |= MF_CHECKED; }
     let _ = AppendMenuW(hmenu, flags, MENU_TOGGLE as usize, PCWSTR(toggle_str.as_ptr()));
+
+    // 추가 항목 (master)
+    if !extra.is_empty() {
+        let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+        for item in extra {
+            let label: Vec<u16> = item.label.encode_utf16().chain(Some(0)).collect();
+            let mut f = MF_STRING;
+            if item.checked { f |= MF_CHECKED; }
+            if item.grayed { f |= MF_GRAYED; }
+            let _ = AppendMenuW(hmenu, f, item.id as usize, PCWSTR(label.as_ptr()));
+        }
+    }
 
     // 구분선
     let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -126,4 +174,3 @@ pub fn tray_event_from_lparam(lparam: LPARAM) -> u32 {
 pub fn open_in_editor(path: &std::path::Path) {
     let _ = std::process::Command::new("notepad.exe").arg(path).spawn();
 }
-

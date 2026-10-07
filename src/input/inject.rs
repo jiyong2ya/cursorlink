@@ -5,7 +5,7 @@
 // 동작:
 //  1. UDP 수신 (블로킹, 1초 타임아웃)
 //  2. 패킷 디코딩 → seq 검증 → 종류별 처리
-//     - MouseMove   : Active 상태일 때만 SetCursorPos + 엣지 감지 (왼쪽 끝 → RETURN_CONTROL)
+//     - MouseMove   : Active 상태일 때만 SetCursorPos + 엣지 감지 (복귀 벽 → RETURN_CONTROL)
 //     - MouseButton : Active 상태일 때만 SendInput
 //     - MouseWheel  : Active 상태일 때만 SendInput
 //     - KeyEvent    : Active 상태일 때만 SendInput (scan code)
@@ -24,6 +24,7 @@ use crate::net::packet::{
     Kind, Packet, FLAG_BTN_DOWN, FLAG_KEY_EXT,
     MB_LEFT, MB_MIDDLE, MB_RIGHT, MB_X1, MB_X2,
 };
+use crate::net::tcp;
 use crate::net::udp;
 use crate::slave::{self, SlaveCtx, TcpTx};
 use crate::state::SlaveState;
@@ -111,17 +112,35 @@ fn inject_move(dx: i32, dy: i32) {
     cursor::set_pos(pt.x + dx, pt.y + dy);
 }
 
-/// 왼쪽 엣지 크로싱 (안쪽에서 → 왼쪽 끝으로) 시 RETURN_CONTROL 전송.
-/// 크로싱 검출: 이전 X 좌표가 edge 초과였고, 지금 X 가 edge 이하이면 실제 왼쪽 진입.
+/// 복귀 벽 크로싱 (안쪽에서 → 벽으로) 시 RETURN_CONTROL 전송.
+/// 복귀 벽은 마스터가 TAKE_CONTROL 때 알려줌 (오른쪽 슬레이브 = 왼쪽 벽, 왼쪽 슬레이브 = 오른쪽 벽).
+/// 크로싱 검출: 이전 X 좌표가 벽 안쪽이었고, 지금 X 가 벽이면 실제 진입.
 fn check_edge_and_return(tx: &TcpTx) {
     let pt = match cursor::get_pos() { Some(p) => p, None => return };
     let scr = cursor::primary_screen();
-    let edge = scr.left;
     let prev = PREV_INJECT_X.swap(pt.x, Ordering::AcqRel);
     if prev == i32::MIN { return; }  // baseline only, first call
-    if prev > edge && pt.x <= edge {
+    let crossed = if slave::SHARED.return_side.load(Ordering::Acquire) == tcp::SIDE_RIGHT {
+        let edge = scr.right - 1;
+        prev < edge && pt.x >= edge
+    } else {
+        let edge = scr.left;
+        prev > edge && pt.x <= edge
+    };
+    if crossed {
         slave::return_control(tx);
     }
+}
+
+/// 진입 직후 기준점을 진입 위치로 맞춤 (slave::enter_active).
+pub fn reset_edge_baseline(x: i32) {
+    PREV_INJECT_X.store(x, Ordering::Release);
+}
+
+/// 새 마스터 세션 시작 시 seq 검증 리셋. 마스터가 재시작하면 seq 가 1 부터 다시 오는데
+/// 이전 값이 남아 있으면 그보다 커질 때까지 패킷이 전부 버려짐.
+pub fn reset_seq() {
+    LAST_SEQ.store(0, Ordering::Relaxed);
 }
 
 fn inject_button(button: u16, down: bool) {

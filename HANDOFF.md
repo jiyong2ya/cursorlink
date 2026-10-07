@@ -1,37 +1,40 @@
-# cursorlink — Windows 세션 인수인계 문서
+# cursorlink — 인수인계 문서
 
-이 문서는 Mac 에서 코드 짜놓고 Windows 로 넘어가서 빌드/테스트할 때 참고용.
-새 Claude 세션이 이 파일 읽고 상황 파악할 수 있도록 자기완결적으로 작성.
+새 Claude 세션이 이 파일만 읽고 상황 파악할 수 있도록 자기완결적으로 작성.
 
 ---
 
 ## 1. 프로젝트 요약
 
-**cursorlink** — 두 Windows PC 사이에서 마우스/키보드를 공유하는 KVM 유틸.
-Multiplicity / Input Director / Barrier 와 같은 방식이지만 유저모드 전용,
-드라이버 없음, 인증서 없음.
+**cursorlink** — Windows PC 사이에서 마우스/키보드를 공유하는 KVM 유틸.
+마스터 1대 + 슬레이브 최대 2대 (왼쪽/오른쪽). 유저모드 전용, 드라이버 없음, 인증서 없음.
 
-**목적:** 사무용. 게임 매크로 목적 아님. Barrier 계열 프로그램이 사용자의 게임 (NGX 안티치트) 에서 튕겨서 자체 개발.
+```
+[왼쪽 슬레이브] ← [마스터] → [오른쪽 슬레이브]
+```
+
+**목적:** 사무용. 유료인 Multiplicity 대체. Input Director 는 사용자의 게임 (NGX 안티치트) 에서 튕겨서 자체 개발.
+→ 안티치트 대응으로 LL 훅은 슬레이브 조작/미러 중에만 설치하고 마스터 사용 중엔 제거한다.
 
 **동작 원리:**
 - Master PC: 물리 마우스/키보드가 꽂힌 쪽. Raw Input (`WM_INPUT`) 으로 이벤트 캡처.
-- Slave PC: master 화면 오른쪽 끝에 커서 닿으면 slave 로 제어권 이동.
-- 이후 master 는 커서 락 + 숨김. 이벤트를 UDP 로 slave 에 전송. Slave 는 `SetCursorPos`/`SendInput` 으로 주입.
-- Slave 커서가 왼쪽 끝 닿으면 다시 master 로 복귀.
+- 마스터 화면 오른쪽 끝 → 오른쪽 슬레이브, 왼쪽 끝 → 왼쪽 슬레이브로 제어권 이동 (쓸어넘기기).
+- 이후 master 는 커서 락 + 숨김 + LL 훅으로 입력 소비. 이벤트를 UDP 로 슬레이브에 전송.
+  슬레이브는 `SetCursorPos`/`SendInput` 으로 주입.
+- 슬레이브 커서가 마스터 쪽 벽 (오른쪽 슬레이브는 왼쪽 벽, 왼쪽 슬레이브는 오른쪽 벽) 에 닿으면 복귀.
+  어느 벽인지는 마스터가 TAKE_CONTROL 로 알려줌 → 슬레이브 config 엔 위치 설정 없음.
 - TCP 로 제어 신호 (TAKE_CONTROL / RETURN_CONTROL / HEARTBEAT / HELLO).
 
 ---
 
-## 2. 저장소
+## 2. 저장소 / 배포
 
-- **URL:** https://github.com/jiyong2ya/cursorlink.git
-- **Branch:** master
-- **최신 커밋 (Mac push 시점):**
-  - `6797864` fix: windows 0.58 API 정합성 사전 수정
-  - `1be6d69` Phase 3: 전역 단축키 + 트레이 + 자동시작
-  - `21b107d` Phase 1 + 2: 마우스/키보드 공유 KVM 뼈대
-
-Windows 에서 최신 상태 확인: `git log --oneline -5`
+- **URL:** https://github.com/jiyong2ya/cursorlink.git (branch `master`)
+- **배포:** 로컬에서 `cargo build --release` → GitHub Releases 에 `cursorlink.exe` 첨부.
+  슬레이브 PC 는 Releases 에서 exe 받아서 씀. CI 없음.
+- 마스터 PC 는 `target\release\cursorlink.exe` 를 직접 실행 (autostart 레지스트리도 이 경로).
+  실행 중이면 exe 가 잠겨서 `cargo build --release` 가 링크 단계에서 실패 → 종료 후 빌드하거나
+  `CARGO_TARGET_DIR` 을 다른 곳으로.
 
 ---
 
@@ -39,226 +42,98 @@ Windows 에서 최신 상태 확인: `git log --oneline -5`
 
 ```
 cursorlink/
-├── Cargo.toml              — 의존성 (windows 0.58, serde, tokio 없음, crossbeam-channel)
-├── config.example.toml     — 첫 실행 시 config.toml 로 복사됨
-├── HANDOFF.md              — 이 문서
-├── README.md
+├── Cargo.toml              — 의존성 (windows 0.58, serde, toml, crossbeam-channel, tracing)
+├── build.rs                — 아이콘 리소스 embed (winresource)
+├── config.example.toml     — 첫 실행 시 config.toml 로 복사됨 (설정 설명은 여기 주석)
+├── assets/                 — 아이콘
 └── src/
-    ├── main.rs             — 진입점, mode 별 dispatch
+    ├── main.rs             — 진입점, DPI awareness, autostart 동기화, mode 별 dispatch
     ├── config.rs           — TOML 로드, 첫 실행 시 notepad 자동 오픈
     ├── logging.rs          — 파일 로거 (release 는 stdout 안 뜨니 필수)
-    ├── state.rs            — MasterShared / SlaveShared (Atomic 상태머신)
-    ├── hotkey.rs           — RegisterHotKey + slave 전용 hidden window
+    ├── state.rs            — Side, MasterShared / SlaveShared (Atomic 상태)
+    ├── hotkey.rs           — RegisterHotKey, 단축키 파싱, 훅용 압축 (pack_for_hook), slave 트레이 창
     ├── autostart.rs        — HKCU\Run 레지스트리 조작
-    ├── tray.rs             — Shell_NotifyIcon 트레이 아이콘
-    ├── master.rs           — 마스터 오케스트레이션 (TCP 워커 + 하트비트)
-    ├── slave.rs            — 슬레이브 오케스트레이션 (TCP 서버 + 하트비트 + 트레이)
+    ├── tray.rs             — 트레이 아이콘, 우클릭 메뉴, 알림 (토스트)
+    ├── master.rs           — 마스터 오케스트레이션: 슬레이브별 TCP 워커, 상태 전환, 미러
+    ├── slave.rs            — 슬레이브 오케스트레이션 (TCP 서버 + 하트비트 + watchdog + 트레이)
     ├── net/
-    │   ├── mod.rs
-    │   ├── packet.rs       — 20바이트 UDP 입력 패킷 encode/decode + 유닛테스트
+    │   ├── packet.rs       — 20바이트 UDP 입력 패킷 encode/decode + 테스트
     │   ├── udp.rs          — bind_recv / bind_send
-    │   └── tcp.rs          — 8바이트 제어 프레임 + connect/listen
+    │   └── tcp.rs          — 8바이트 제어 프레임 + connect/listen + 테스트
     └── input/
-        ├── mod.rs
-        ├── capture.rs      — [master] Raw Input → UDP 송신
-        ├── inject.rs       — [slave] UDP 수신 → SetCursorPos / SendInput
+        ├── capture.rs      — [master] message window, Raw Input → 엣지 감지 / UDP 송신, 눌린 키 추적
+        ├── hooks.rs        — [master] LL 훅: Remote 중 입력 소비 + 단축키 감지, 미러 중 키 forward
+        ├── inject.rs       — [slave] UDP 수신 → SetCursorPos / SendInput, 복귀 벽 감지
         └── cursor.rs       — GetCursorPos / SetCursorPos / ClipCursor / ShowCursor 헬퍼
 ```
 
 ---
 
-## 4. 빌드 방법 (Windows)
+## 4. 설정 / 단축키
 
-**Rust 설치:** `winget install Rustlang.Rustup` 또는 https://rustup.rs 에서 rustup-init.exe
+설정 설명은 `config.example.toml` 주석 참고. 핵심:
+- 마스터 `peer_ip` = 오른쪽 슬레이브, `left_peer_ip` = 왼쪽 슬레이브 (빈 문자열 = 없음)
+- 슬레이브 `peer_ip` = 마스터
+- 단축키 파싱: `+` 가 구분자라 numpad + 는 `numplus` 로 씀
 
-**빌드:**
-```
-cd cursorlink
-cargo build --release
-```
+| 단축키 | Local | Remote (슬레이브 조작 중) | Local + Mirror |
+|---|---|---|---|
+| hotkey_transfer_left | 왼쪽으로 (중앙 진입) | 왼쪽으로 바로 | 왼쪽 미러 대상 넣기/빼기 |
+| hotkey_transfer | 오른쪽으로 (중앙 진입) | 오른쪽으로 바로 | 오른쪽 미러 대상 넣기/빼기 |
+| hotkey_return | 일반 키 | 마스터 복귀 | 일반 키 |
+| hotkey_mirror | 미러 ON | 일반 키 (슬레이브로 forward) | 미러 OFF |
+| hotkey_edge_toggle | 쓸어넘기기 on/off | 쓸어넘기기 on/off | 쓸어넘기기 on/off |
+| hotkey_toggle | 기능 on/off | 기능 off + 복귀 | 기능 off + 미러 off |
 
-- release 산출물: `target\release\cursorlink.exe`
-- debug 로 돌리면 콘솔에도 로그 뜸: `cargo run`
-- 자세한 로그: `set RUST_LOG=cursorlink=debug && cargo run`
-
----
-
-## 5. 컴파일 에러 예상 지점 (Mac 에서 짰기 때문)
-
-내가 windows 크레이트 0.58 API 세부에 확신 못 하는 부분들.
-실제 빌드에서 여기가 터질 확률 높음:
-
-### 5.1 RAWMOUSE 필드 타입
-`src/input/capture.rs`
-- `m.usFlags & MOUSE_MOVE_ABSOLUTE` — 만약 `usFlags` 가 `MOUSE_STATE(u16)` wrapper 면 `.0` 필요
-- `m.Anonymous.Anonymous.usButtonFlags` — 마찬가지로 `RI_MOUSE_STATE` wrapper 가능성
-- `RI_MOUSE_BUTTON_*_DOWN as u16` — 상수가 wrapper 면 `.0` 필요
-
-**fix 방법:** 컴파일러가 "expected u16, found RI_MOUSE_STATE" 같은 에러 내면 그 자리에 `.0` 추가.
-
-### 5.2 RID_DEVICE_INFO_TYPE 비교
-`src/input/capture.rs::handle_raw_input`
-```rust
-if ri.header.dwType == RIM_TYPEMOUSE {
-```
-- `dwType` 가 `u32` 이고 `RIM_TYPEMOUSE` 가 wrapper 면 `== RIM_TYPEMOUSE.0`
-- 둘 다 wrapper 면 == 로 OK
-- 둘 다 u32 면 == 로 OK
-
-### 5.3 HRAWINPUT 캐스팅
-```rust
-let hri = HRAWINPUT(lparam.0 as *mut _);
-```
-- 0.58 에서 HRAWINPUT 필드가 `*mut c_void` 이면 OK
-- `*mut _` 추론 실패하면 `as *mut std::ffi::c_void` 명시
-
-### 5.4 Registry API 시그니처
-`src/autostart.rs`
-- `RegSetValueExW` 의 마지막 인자를 `Some(bytes)` 로 넘김. 만약 시그니처가 `Option<*const u8>` 이면 `Some(bytes.as_ptr())` + `bytes.len() as u32` 별도 인자
-- 이미 pointer cast 사전 fix 는 했지만 시그니처 변경엔 대응 안 됨
-
-### 5.5 트레이 관련
-`src/tray.rs`
-- `TrackPopupMenu` 인자 갯수 (7개) — 버전마다 다를 수 있음
-- `LoadIconW(HINSTANCE::default(), IDI_APPLICATION)` — 이미 default 로 변경했으니 OK 예상
-
-### 5.6 flags 비트 연산
-- `let mut flags = MF_STRING; flags |= MF_CHECKED;` — `MF_STRING` 이 wrapper 면 `BitOrAssign` impl 필요.
-- windows-rs 0.58 은 대부분 impl 되어 있어서 OK 예상. 안 되면 `let flags = MF_STRING | MF_CHECKED;` 로.
-
-### 5.7 예상 안 되는 것 (아마 OK)
-- `SendInput` 시그니처
-- `INPUT { r#type: INPUT_MOUSE, Anonymous: INPUT_0 { mi: MOUSEINPUT { ... } } }` 구조
-- `GetCursorPos` / `SetCursorPos`
-- 소켓 (std::net)
-- crossbeam-channel
+- Local / Mirror 에선 `RegisterHotKey` 로 받음.
+- Remote 에선 LL 훅이 키를 소비해서 RegisterHotKey 가 안 불림 → 같은 단축키를 훅 테이블에도 넣어
+  훅 안에서 (modifier 직접 추적해서) 매칭. 처리한 키의 오토리피트/떼기는 조용히 소비.
+- 쓸어넘기기 off 는 마스터 → 슬레이브 방향만 막음. 슬레이브 → 마스터 복귀 (벽) 는 항상 동작.
 
 ---
 
-## 6. 실행 흐름 (사용자 관점)
+## 5. 아키텍처
 
-**첫 실행 (양쪽 PC 각각):**
-1. `target\release\cursorlink.exe` 더블클릭
-2. 자동으로 notepad 열리고 `config.toml` 편집 화면 나옴
-3. 수정 후 저장:
-   - Master 쪽:
-     ```
-     mode = "master"
-     peer_ip = "슬레이브PC의IP"
-     shared_secret = "양쪽 동일한 문자열"
-     ```
-   - Slave 쪽:
-     ```
-     mode = "slave"
-     peer_ip = "마스터PC의IP"
-     shared_secret = "양쪽 동일한 문자열"
-     ```
-4. notepad 닫기 + 확인 창 "확인"
-5. 트레이 아이콘 (Windows 기본 앱 아이콘) 뜸
-6. Windows 방화벽 팝업 → 개인 네트워크 허용
-
-**동작 확인:**
-- 트레이 우클릭 → 로그 보기 → `master: TCP 연결 성공, Local 상태` 라인 확인 (master 쪽)
-- Master 마우스를 오른쪽 화면 끝으로 이동 → 커서 사라짐 → Slave 화면 왼쪽에 나타나야 함
-- Slave 에서 왼쪽 끝 이동 → 다시 Master 로 복귀
-- `Ctrl+Alt+Shift+K` → 기능 on/off 토글
-- 트레이 우클릭 → 종료
-
----
-
-## 7. 트러블슈팅 체크리스트
-
-**트레이 아이콘 안 뜸**
-- `cursorlink.log` 확인. 에러 있으면 채팅에 붙여줌
-- 방화벽 팝업 놓쳤을 수 있음 → `wf.msc` 에서 규칙 확인
-
-**Master TCP 계속 재시도**
-- Slave 가 켜져 있는지
-- peer_ip 오타 확인
-- 방화벽에서 46011/UDP, 46012/TCP 허용됐는지
-- `ping <peer_ip>` 로 기본 연결 확인
-
-**HELLO 인증 실패**
-- 양쪽 `shared_secret` 이 정확히 동일한지 (공백, 대소문자, 개행)
-
-**커서가 안 넘어감**
-- Master 로그에 `Local → Remote` 라인 나오는지 확인
-- 안 나오면: `check_edge_and_transfer` 가 호출 안 됨. Local 상태 아닐 수 있음
-- 나오는데 slave 커서 안 나타나면: UDP 도달 문제
-
-**커서가 넘어갔는데 delta 안 반영**
-- Slave 로그에 `TAKE_CONTROL 수신 → Active` 나오는지
-- 안 나오면 TCP 문제
-- 나오는데 커서 안 움직이면: UDP 유실 or seq 검증 실패
-
-**단축키 안 먹음**
-- 다른 프로그램이 같은 조합 이미 잡고 있을 수 있음. config.hotkey_toggle 변경
-
-**로그 파일**: `cursorlink.exe` 옆에 `cursorlink.log`. `set RUST_LOG=cursorlink=debug` 하고 실행하면 더 자세히.
-
----
-
-## 8. 다음 세션에서 할 일 (우선순위 순)
-
-1. **빌드 성공시키기** — 컴파일 에러 잡기. 위 5절 참고
-2. **단일 PC 스모크 테스트** — master 모드로 실행, 트레이 뜨는지, 로그 정상인지
-3. **두 PC (또는 두 VM) 로 실제 마우스 넘기기 테스트**
-4. **엣지 감지 튜닝** — 왼쪽 끝 임계값이 `pt.x <= scr.left` 인데, 정상 사용 중 x=0 히트해서 오작동할 수 있음. 필요 시 debounce/threshold 조정
-5. **지연 측정** — 로그의 `ts_us` 필드로 왕복 지연 계산
-6. **DPI 스케일링 대응** — 두 PC 해상도/DPI 다르면 delta 스케일링 문제 있을 수 있음
-7. **키보드 검증** — 특수키 (한/영, 한자, 미디어) 정상 전달되는지
-
-**Phase 4 후보 (당장 안 함):**
-- egui 기반 native 설정 창
-- 커스텀 .ico 아이콘 embedded resource
-- Inno Setup 인스톨러
-- ChaCha20 UDP 페이로드 암호화
-- run.bat 자동 업데이트 스크립트
-
----
-
-## 9. 아키텍처 핵심 요약
-
-**상태머신 (Master):**
+**상태머신 (Master):** `Local` / `Remote(active side)` + 슬레이브별 `connected` 플래그
 ```
-Disconnected  ──TCP연결+HELLO OK──▶  Local
-Local         ──커서 오른쪽 끝──▶     Remote (커서 락+숨김, TAKE_CONTROL 송신)
-Remote        ──RETURN_CONTROL──▶    Local  (커서 언락+표시)
-* ──TCP 끊김──▶ Disconnected (Local 강제 복귀)
+Local     ──화면 오른쪽 끝 / hotkey_transfer──────▶  Remote(오른쪽)  (TAKE_CONTROL, 커서 락+숨김, 훅 install)
+Local     ──화면 왼쪽 끝 / hotkey_transfer_left───▶  Remote(왼쪽)
+Remote(A) ──반대쪽 단축키──▶ Remote(B)   (A 에 눌린 키 떼기 + RETURN_CONTROL, B 에 TAKE_CONTROL)
+Remote    ──RETURN_CONTROL / hotkey_return / 연결 끊김──▶ Local (커서 언락+원위치, 훅 uninstall)
 ```
+- 상태 전환은 전부 메인 스레드에서만 (커서/훅 API 가 스레드에 묶임).
+  TCP 스레드는 `PostMessage(WM_PEER_UP / DOWN / RETURN)` 로 메인 스레드에 넘김.
+- 슬레이브를 떠날 때 (복귀/전환/미러 해제) 그 슬레이브에 눌린 채인 키/버튼 key-up 전송 (stuck key 방지).
+
+**Mirror (Local 에서만):** 마스터 + 미러 대상 슬레이브 동시 조작.
+- 미러 대상은 슬레이브별 on/off, 미러 끈 뒤에도 기억. 다 빼놓고 켜면 양쪽으로 리셋.
+- 커서는 화면 비율 (MousePos 패킷) 로 동기화, 키는 훅에서 forward (소비 X).
 
 **상태머신 (Slave):**
 ```
-Disconnected  ──TCP accept+HELLO OK──▶  Idle
-Idle          ──TAKE_CONTROL 수신──▶     Active (커서 표시)
-Active        ──커서 왼쪽 끝──▶          Idle   (RETURN_CONTROL 송신, 커서 숨김)
+Disconnected  ──TCP accept+HELLO OK──▶  Idle   (UDP seq 리셋: 마스터 재시작 대응)
+Idle          ──TAKE_CONTROL──▶          Active (진입 위치로 이동, 복귀 벽 기억)
+Active        ──복귀 벽 도달──▶          Idle   (RETURN_CONTROL 송신)
+Active        ──RETURN_CONTROL (마스터)──▶ Idle
 * ──TCP 끊김──▶ Disconnected
 ```
+- watchdog: Active 중 secure desktop (UAC/잠금화면) 감지 → 자동 RETURN_CONTROL.
+- disabled 상태에서 TAKE_CONTROL 받으면 바로 RETURN_CONTROL 응답 (마스터 갇힘 방지).
 
-**스레드 구성:**
+**스레드:**
+- Master: main (메시지 펌프: WM_INPUT / WM_HOTKEY / 트레이 / WM_PEER_* / LL 훅),
+  `cursorlink-tcp-left|right` (슬레이브별 연결 + reader) + `cursorlink-tcp-w-*` (writer), `cursorlink-hb`
+- Slave: main (UDP recv), `cursorlink-tcp-srv`, `cursorlink-tcp-w`, `cursorlink-hb`, `cursorlink-watchdog`, `cursorlink-tray`
 
-Master:
-- Main: Raw Input 메시지 펌프 (WM_INPUT + WM_HOTKEY + WM_TRAY + WM_COMMAND)
-- cursorlink-tcp: TCP 워커 (connect/reconnect + reader)
-- cursorlink-tcp-w: TCP writer (rx 채널 → sock.write)
-- cursorlink-hb: HEARTBEAT ticker (3초)
-
-Slave:
-- Main: UDP recv 블로킹 루프
-- cursorlink-tcp-srv: TCP 서버 (accept + HELLO 검증 + reader)
-- cursorlink-tcp-w: TCP writer
-- cursorlink-hb: HEARTBEAT ticker
-- cursorlink-tray: Hotkey + 트레이 hidden window 메시지 루프
-
-**UDP 패킷 (20바이트):**
+**UDP 패킷 (20바이트, LE):**
 ```
-0..4   seq (u32)
+0..4   seq (u32)      — 슬레이브가 오래된/중복 패킷 폐기 (HELLO 마다 리셋)
 4..8   ts_us (u32)
-8      kind (u8, 0=Move / 1=Btn / 2=Wheel / 3=Key / 4=Heartbeat)
-9      flags (u8)
+8      kind (u8, 0=Move / 1=Btn / 2=Wheel / 3=Key / 4=Heartbeat / 5=MousePos)
+9      flags (u8, bit0=down, bit1=확장키)
 10..12 button (u16, mouse button or scan code)
-12..14 dx (i16)
-14..16 dy (i16)
+12..14 dx (i16)       — MousePos 면 x 비율 (0..10000)
+14..16 dy (i16)       — MousePos 면 y 비율
 16..18 wheel_dx (i16)
 18..20 wheel_dy (i16)
 ```
@@ -266,15 +141,31 @@ Slave:
 **TCP 프레임 (8바이트):**
 ```
 0    msg_type (0x01 TAKE_CONTROL / 0x02 RETURN_CONTROL / 0x03 HEARTBEAT / 0x04 HELLO)
-1..8 payload (msg_type 별 해석)
+1..8 payload
+     TAKE_CONTROL: [entry_side, entry_y_pct, return_side, 0...]
+       entry_side: 0=왼쪽 벽, 1=오른쪽 벽, 4=화면 중앙 / return_side: 0=왼쪽 벽 (구버전 기본), 1=오른쪽 벽
+     HELLO: shared_secret 앞 7바이트
 ```
 
 ---
 
-## 10. 참고
+## 6. 트러블슈팅
 
-- **Mac 개발 환경:** `/Users/jeongjiyong/IdeaProjects/cursorlink`
-- **작성자 계정:** jiyong2ya (GitHub)
-- **관련 프로젝트:** game-macro (커널 드라이버 기반, 이건 완전 별개)
-- **Rust 버전:** 1.70+ (edition 2021)
-- **타겟:** `x86_64-pc-windows-msvc` (기본)
+**로그:** exe 옆 `cursorlink.log`. 트레이 우클릭 → 로그 보기. 자세히: `RUST_LOG=cursorlink=debug`.
+
+- **슬레이브 연결 안 됨:** 트레이 메뉴에 슬레이브별 연결 상태 표시. peer 주소 / 방화벽 (46011/UDP, 46012/TCP) / `shared_secret` 확인.
+  노트북 등에서 네트워크가 "공용" 이면 방화벽 허용이 개인 네트워크에만 걸려 막힐 수 있음 → 네트워크를 개인으로.
+- **노트북 덮개 닫기 / 절전:** TCP 는 이걸 바로 알려주지 않음. 양쪽 다 하트비트 (3초) 가 10초 (`tcp::PEER_TIMEOUT`) 동안
+  안 오면 끊김 처리 → 그 슬레이브를 조작 중이었으면 마스터로 자동 복귀, 3초마다 재연결 시도.
+- **단축키 안 먹음:** 로그에 `RegisterHotKey ... 실패` → 다른 프로그램 (또는 cursorlink 가 두 번 실행) 이 같은 키 사용 중.
+- **넘어갔는데 바로 튕겨 돌아옴:** 슬레이브 진입 위치가 벽에서 10px 안쪽이라 반대로 조금만 움직여도 복귀.
+- **멀티 모니터:** 엣지/진입 계산이 주 모니터 (`primary_screen`) 기준. 슬레이브가 모니터 여러 개면 주 모니터 끝에서 복귀함.
+
+---
+
+## 7. 다음 후보
+
+- 멀티 모니터 대응 (가상 스크린 기준 엣지)
+- DPI 다른 PC 간 delta 스케일링
+- ChaCha20 UDP 페이로드 암호화
+- egui 설정 창 / 인스톨러
