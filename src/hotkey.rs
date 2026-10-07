@@ -24,8 +24,12 @@ pub const HOTKEY_ID_MIRROR: i32 = 2;
 pub const HOTKEY_ID_TRANSFER: i32 = 3;
 /// 왼쪽 슬레이브로 전환 (미러 중엔 왼쪽 미러 대상 넣기/빼기)
 pub const HOTKEY_ID_TRANSFER_LEFT: i32 = 4;
-/// 쓸어넘기기 on/off
+/// 쓸어넘기기 양쪽 on/off
 pub const HOTKEY_ID_EDGE: i32 = 5;
+/// 왼쪽 쓸어넘기기만 on/off
+pub const HOTKEY_ID_EDGE_LEFT: i32 = 6;
+/// 오른쪽 쓸어넘기기만 on/off
+pub const HOTKEY_ID_EDGE_RIGHT: i32 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeySpec {
@@ -315,5 +319,8 @@ mod tests {
     fn pack_with_modifiers() {
         // ctrl=2, shift=4 → 6 << 16
         assert_eq!(pack_for_hook("ctrl+shift+k"), (6 << 16) | b'K' as u32);
+        // 쓸어넘기기 한쪽 토글 예시: num/ (왼쪽 전환) 과 다른 키로 구분돼야 함
+        assert_eq!(pack_for_hook("ctrl+num/"), (2 << 16) | VK_DIVIDE.0 as u32);
+        assert_ne!(pack_for_hook("ctrl+num/"), pack_for_hook("num/"));
     }
 }

@@ -10,7 +10,7 @@ Multiplicity / Input Director 같은 프로그램이지만 유저모드 전용, 
 - 마스터 화면 오른쪽 끝 → 오른쪽 슬레이브, 왼쪽 끝 → 왼쪽 슬레이브 (쓸어넘기기)
 - 슬레이브 화면에서 마스터 쪽 벽에 닿으면 마스터로 복귀
 - 단축키로 바로 이동 / 슬레이브끼리 바로 이동 / 마스터 복귀
-- 쓸어넘기기 on/off 단축키 (꺼도 단축키 이동과 복귀는 동작)
+- 쓸어넘기기 on/off 단축키: 왼쪽만 / 오른쪽만 / 양쪽 (꺼도 단축키 이동과 복귀는 동작)
 - Mirror 모드: 마스터 + 고른 슬레이브 동시 조작
 
 ## 빌드 (Windows)
@@ -38,9 +38,12 @@ cargo build --release
 | `hotkey_transfer` | `num-` | 오른쪽 슬레이브로 | 오른쪽 슬레이브로 바로 | 오른쪽 미러 넣기/빼기 |
 | `hotkey_return` | `num.` | (일반 키) | 마스터로 복귀 | (일반 키) |
 | `hotkey_mirror` | `num*` | 미러 켜기 | — | 미러 끄기 |
-| `hotkey_edge_toggle` | `numplus` | 쓸어넘기기 on/off | 쓸어넘기기 on/off | 쓸어넘기기 on/off |
+| `hotkey_edge_toggle` | `numplus` | 쓸어넘기기 양쪽 on/off | 〃 | 〃 |
+| `hotkey_edge_left` | `ctrl+num/` | 왼쪽 쓸어넘기기만 on/off | 〃 | 〃 |
+| `hotkey_edge_right` | `ctrl+num-` | 오른쪽 쓸어넘기기만 on/off | 〃 | 〃 |
 | `hotkey_toggle` | `ctrl+alt+shift+k` | 기능 전체 on/off | 기능 끄고 복귀 | 기능 끄기 |
 
-트레이 우클릭 메뉴에서 슬레이브 연결 상태, 쓸어넘기기, 미러 대상도 보고 바꿀 수 있음.
+트레이 우클릭 메뉴에서 슬레이브 연결 상태, 쓸어넘기기 (왼쪽/오른쪽), 미러 대상도 보고 바꿀 수 있음.
+쓸어넘기기 시작 상태는 `edge_switch_left` / `edge_switch_right`.
 
 자세한 구조는 [HANDOFF.md](HANDOFF.md).

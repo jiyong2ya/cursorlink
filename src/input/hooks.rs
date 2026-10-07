@@ -5,7 +5,7 @@
 //     소비 (consume). Raw Input 만으로는 관찰만 가능하고 이벤트가 그대로 Master의
 //     활성 창까지 전달되어 이중 입력이 발생함.
 //  2. Remote 중 단축키 감지. 훅이 키를 소비하면 RegisterHotKey 가 안 불리므로
-//     (복귀 / 왼쪽·오른쪽 전환 / 쓸어넘기기 / toggle) 를 여기서 직접 매칭.
+//     (복귀 / 왼쪽·오른쪽 전환 / 쓸어넘기기 양쪽·왼쪽·오른쪽 / toggle) 를 여기서 직접 매칭.
 //  3. Mirror 중 키보드를 Slave 로 forward (소비는 안 함).
 //
 // 소비 조건: enabled && state == Remote (Mirror 아님)
@@ -40,22 +40,25 @@ pub static FORWARD_KEYBOARD: AtomicBool = AtomicBool::new(true);
 /// 훅이 아는 단축키 종류.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookAction {
-    Toggle = 0,
-    Mirror = 1,
-    Left   = 2,
-    Right  = 3,
-    Edge   = 4,
-    Return = 5,
+    Toggle    = 0,
+    Mirror    = 1,
+    Left      = 2,
+    Right     = 3,
+    /// 쓸어넘기기 양쪽 on/off
+    Edge      = 4,
+    Return    = 5,
+    EdgeLeft  = 6,
+    EdgeRight = 7,
 }
 
-const ACTIONS: [HookAction; 6] = [
-    HookAction::Toggle, HookAction::Mirror, HookAction::Left,
-    HookAction::Right, HookAction::Edge, HookAction::Return,
+const ACTIONS: [HookAction; 8] = [
+    HookAction::Toggle, HookAction::Mirror, HookAction::Left, HookAction::Right,
+    HookAction::Edge, HookAction::Return, HookAction::EdgeLeft, HookAction::EdgeRight,
 ];
 
 /// 단축키 테이블 (HookAction as usize 로 인덱싱).
 /// 값 = (modifiers << 16) | vk  (hotkey::pack_for_hook), 0 = 미설정.
-static HOTKEYS: [AtomicU32; 6] = [const { AtomicU32::new(0) }; 6];
+static HOTKEYS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
 
 /// Remote 중 단축키로 처리한 키. 오토리피트/떼기를 조용히 소비하기 위해 기억.
 static SWALLOW_VK: AtomicU32 = AtomicU32::new(0);

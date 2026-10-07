@@ -46,13 +46,19 @@ hotkey_transfer_left = ""
 # 빈 문자열이면 비활성. 예: "num."
 hotkey_return = ""
 
-# 쓸어넘기기 (마스터 화면 끝에 마우스 닿으면 슬레이브로 전환) on/off 단축키.
+# 쓸어넘기기 (마스터 화면 끝에 마우스 닿으면 그 쪽 슬레이브로 전환) on/off 단축키.
 # 꺼도 단축키 전환과 슬레이브 → 마스터 복귀 (슬레이브 화면 끝) 는 그대로 동작.
-# 빈 문자열이면 비활성. 예: "numplus"
+# 빈 문자열이면 비활성.
+# 양쪽 한번에 (하나라도 켜져 있으면 다 끄고, 다 꺼져 있으면 다 켬). 예: "numplus"
 hotkey_edge_toggle = ""
+# 왼쪽만 (화면 왼쪽 끝 → 왼쪽 슬레이브). 예: "ctrl+num/"
+hotkey_edge_left = ""
+# 오른쪽만 (화면 오른쪽 끝 → 오른쪽 슬레이브). 예: "ctrl+num-"
+hotkey_edge_right = ""
 
-# 시작 시 쓸어넘기기 사용 여부
-edge_switch = true
+# 시작 시 쓸어넘기기 사용 여부 (왼쪽 / 오른쪽)
+edge_switch_left = true
+edge_switch_right = true
 
 # Windows 시작 시 자동 실행 (레지스트리 HKCU\Run 사용)
 autostart = false

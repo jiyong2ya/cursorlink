@@ -27,8 +27,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::config::Config;
 use crate::hotkey::{
-    self, HOTKEY_ID_EDGE, HOTKEY_ID_MIRROR, HOTKEY_ID_TOGGLE, HOTKEY_ID_TRANSFER,
-    HOTKEY_ID_TRANSFER_LEFT,
+    self, HOTKEY_ID_EDGE, HOTKEY_ID_EDGE_LEFT, HOTKEY_ID_EDGE_RIGHT, HOTKEY_ID_MIRROR,
+    HOTKEY_ID_TOGGLE, HOTKEY_ID_TRANSFER, HOTKEY_ID_TRANSFER_LEFT,
 };
 use crate::input::cursor;
 use crate::input::hooks::{self, HookAction};
@@ -97,7 +97,9 @@ unsafe fn register_hotkeys(hwnd: HWND, cfg: &Config) {
         (HOTKEY_ID_MIRROR,        HookAction::Mirror, "mirror",            &cfg.hotkey_mirror),
         (HOTKEY_ID_TRANSFER,      HookAction::Right,  "→ 오른쪽",          &cfg.hotkey_transfer),
         (HOTKEY_ID_TRANSFER_LEFT, HookAction::Left,   "→ 왼쪽",            &cfg.hotkey_transfer_left),
-        (HOTKEY_ID_EDGE,          HookAction::Edge,   "쓸어넘기기 on/off", &cfg.hotkey_edge_toggle),
+        (HOTKEY_ID_EDGE,          HookAction::Edge,   "쓸어넘기기 양쪽 on/off", &cfg.hotkey_edge_toggle),
+        (HOTKEY_ID_EDGE_LEFT,     HookAction::EdgeLeft,  "쓸어넘기기 왼쪽 on/off",   &cfg.hotkey_edge_left),
+        (HOTKEY_ID_EDGE_RIGHT,    HookAction::EdgeRight, "쓸어넘기기 오른쪽 on/off", &cfg.hotkey_edge_right),
     ];
     for (id, action, name, spec) in list {
         if let Err(e) = hotkey::register_optional(hwnd, id, name, spec) {
@@ -191,6 +193,8 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
                     HOTKEY_ID_TRANSFER      => master::on_side_hotkey(Side::Right),
                     HOTKEY_ID_TRANSFER_LEFT => master::on_side_hotkey(Side::Left),
                     HOTKEY_ID_EDGE          => master::toggle_edge(),
+                    HOTKEY_ID_EDGE_LEFT     => master::toggle_edge_side(Side::Left),
+                    HOTKEY_ID_EDGE_RIGHT    => master::toggle_edge_side(Side::Right),
                     _ => {}
                 }
                 LRESULT(0)
@@ -222,7 +226,8 @@ extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM
             WM_COMMAND => {
                 match crate::tray::menu_id_from_wparam(wparam) {
                     crate::tray::MENU_TOGGLE => master::toggle_enabled(),
-                    crate::tray::MENU_EDGE => master::toggle_edge(),
+                    crate::tray::MENU_EDGE_LEFT => master::toggle_edge_side(Side::Left),
+                    crate::tray::MENU_EDGE_RIGHT => master::toggle_edge_side(Side::Right),
                     crate::tray::MENU_MIRROR_LEFT => master::toggle_mirror_target(Side::Left),
                     crate::tray::MENU_MIRROR_RIGHT => master::toggle_mirror_target(Side::Right),
                     crate::tray::MENU_SETTINGS => {
@@ -364,9 +369,8 @@ unsafe fn check_edge_and_transfer() {
     // 첫 호출은 baseline 설정만 하고 트리거 안 함.
     if prev == i32::MIN { return; }
 
-    // Mirror 상태면 Remote 로 안 넘어감. 쓸어넘기기 off 면 단축키로만 전환.
+    // Mirror 상태면 Remote 로 안 넘어감.
     if master::SHARED.mirror.load(Ordering::Acquire) { return; }
-    if !master::SHARED.edge_enabled.load(Ordering::Acquire) { return; }
 
     // Startup grace period: 재시작 시 커서가 끝 근처에 있으면 첫 이동에 실수 트리거되는 것 방지.
     if let Some(start) = STARTUP_TIME.get() {
@@ -387,6 +391,9 @@ unsafe fn check_edge_and_transfer() {
     } else {
         return;
     };
+
+    // 그 쪽 쓸어넘기기가 꺼져 있으면 단축키로만 전환.
+    if !master::SHARED.is_edge_enabled(side) { return; }
 
     let entry_y_pct = if scr.height() > 0 {
         (((pt.y - scr.top) as i64 * 100) / scr.height() as i64).clamp(0, 100) as u8

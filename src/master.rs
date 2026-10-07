@@ -80,7 +80,8 @@ pub fn run(cfg: Config) -> Result<()> {
     if targets.iter().all(|t| t.is_empty()) {
         anyhow::bail!("슬레이브 주소가 없습니다 (peer_ip / left_peer_ip 중 하나는 필요)");
     }
-    SHARED.edge_enabled.store(cfg.edge_switch, Ordering::Release);
+    SHARED.edge_enabled[Side::Left.idx()].store(cfg.edge_switch_left, Ordering::Release);
+    SHARED.edge_enabled[Side::Right.idx()].store(cfg.edge_switch_right, Ordering::Release);
 
     let mut links: [Option<PeerLink>; 2] = [None, None];
     let mut workers = Vec::new();
@@ -377,6 +378,8 @@ pub fn on_hook_hotkey(action: HookAction) {
         HookAction::Left   => on_side_hotkey(Side::Left),
         HookAction::Right  => on_side_hotkey(Side::Right),
         HookAction::Edge   => toggle_edge(),
+        HookAction::EdgeLeft  => toggle_edge_side(Side::Left),
+        HookAction::EdgeRight => toggle_edge_side(Side::Right),
         HookAction::Toggle => toggle_enabled(),
         HookAction::Mirror => {}
     }
@@ -512,16 +515,37 @@ pub fn set_enabled(en: bool) {
     notify(if en { "cursorlink 켜짐" } else { "cursorlink 꺼짐" });
 }
 
-/// 쓸어넘기기 (마스터 화면 끝 → 슬레이브) on/off. 슬레이브 → 마스터 복귀는 항상 동작.
+/// 쓸어넘기기 (마스터 화면 끝 → 슬레이브) 양쪽 한번에 on/off.
+/// 설정된 쪽 중 하나라도 켜져 있으면 양쪽 다 끄고, 다 꺼져 있으면 양쪽 다 켬.
+/// 슬레이브 → 마스터 복귀는 항상 동작.
 pub fn toggle_edge() {
-    let on = !SHARED.edge_enabled.load(Ordering::Acquire);
-    SHARED.edge_enabled.store(on, Ordering::Release);
-    tracing::info!("master: 쓸어넘기기 {}", if on { "ON" } else { "OFF" });
-    notify(if on {
-        "쓸어넘기기 ON"
-    } else {
-        "쓸어넘기기 OFF — 슬레이브로는 단축키로만 이동"
-    });
+    let any_on = Side::ALL.into_iter().any(|s| link(s).is_some() && SHARED.is_edge_enabled(s));
+    for s in Side::ALL {
+        SHARED.edge_enabled[s.idx()].store(!any_on, Ordering::Release);
+    }
+    edge_changed();
+}
+
+/// 한쪽 쓸어넘기기만 on/off.
+pub fn toggle_edge_side(side: Side) {
+    if link(side).is_none() {
+        notify(&format!("{} 슬레이브가 설정에 없음", side.label()));
+        return;
+    }
+    let on = !SHARED.is_edge_enabled(side);
+    SHARED.edge_enabled[side.idx()].store(on, Ordering::Release);
+    edge_changed();
+}
+
+fn edge_changed() {
+    // "왼쪽 ON / 오른쪽 OFF" (설정된 쪽만)
+    let desc = Side::ALL.into_iter()
+        .filter(|s| link(*s).is_some())
+        .map(|s| format!("{} {}", s.label(), if SHARED.is_edge_enabled(s) { "ON" } else { "OFF" }))
+        .collect::<Vec<_>>()
+        .join(" / ");
+    tracing::info!("master: 쓸어넘기기 ({})", desc);
+    notify(&format!("쓸어넘기기 — {}", desc));
 }
 
 // -----------------------------------------------------------------------------
@@ -638,12 +662,16 @@ pub fn tray_items() -> Vec<MenuItem> {
             });
         }
     }
-    items.push(MenuItem {
-        id: crate::tray::MENU_EDGE,
-        label: "쓸어넘기기 (화면 끝 → 슬레이브)".to_string(),
-        checked: SHARED.edge_enabled.load(Ordering::Acquire),
-        grayed: false,
-    });
+    for (side, id) in [(Side::Left, crate::tray::MENU_EDGE_LEFT), (Side::Right, crate::tray::MENU_EDGE_RIGHT)] {
+        if link(side).is_some() {
+            items.push(MenuItem {
+                id,
+                label: format!("쓸어넘기기: {} (화면 {} 끝 → {} 슬레이브)", side.label(), side.label(), side.label()),
+                checked: SHARED.is_edge_enabled(side),
+                grayed: false,
+            });
+        }
+    }
     for (side, id) in [(Side::Left, crate::tray::MENU_MIRROR_LEFT), (Side::Right, crate::tray::MENU_MIRROR_RIGHT)] {
         if link(side).is_some() {
             items.push(MenuItem {

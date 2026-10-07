@@ -82,12 +82,15 @@ cursorlink/
 | hotkey_transfer | 오른쪽으로 (중앙 진입) | 오른쪽으로 바로 | 오른쪽 미러 대상 넣기/빼기 |
 | hotkey_return | 일반 키 | 마스터 복귀 | 일반 키 |
 | hotkey_mirror | 미러 ON | 일반 키 (슬레이브로 forward) | 미러 OFF |
-| hotkey_edge_toggle | 쓸어넘기기 on/off | 쓸어넘기기 on/off | 쓸어넘기기 on/off |
+| hotkey_edge_toggle | 쓸어넘기기 양쪽 on/off | 〃 | 〃 |
+| hotkey_edge_left / _right | 그 쪽 쓸어넘기기만 on/off | 〃 | 〃 |
 | hotkey_toggle | 기능 on/off | 기능 off + 복귀 | 기능 off + 미러 off |
 
 - Local / Mirror 에선 `RegisterHotKey` 로 받음.
 - Remote 에선 LL 훅이 키를 소비해서 RegisterHotKey 가 안 불림 → 같은 단축키를 훅 테이블에도 넣어
   훅 안에서 (modifier 직접 추적해서) 매칭. 처리한 키의 오토리피트/떼기는 조용히 소비.
+- 쓸어넘기기는 왼쪽/오른쪽 따로 on/off (`MasterShared::edge_enabled[side]`, 시작값 `edge_switch_left/right`).
+  양쪽 토글은 하나라도 켜져 있으면 다 끄고, 다 꺼져 있으면 다 켬.
 - 쓸어넘기기 off 는 마스터 → 슬레이브 방향만 막음. 슬레이브 → 마스터 복귀 (벽) 는 항상 동작.
 
 ---

@@ -23,7 +23,8 @@ pub const MENU_TOGGLE:       u32 = 100;
 pub const MENU_EXIT:         u32 = 101;
 pub const MENU_SETTINGS:     u32 = 102;
 pub const MENU_LOG:          u32 = 103;
-pub const MENU_EDGE:         u32 = 104;
+pub const MENU_EDGE_LEFT:    u32 = 104;
+pub const MENU_EDGE_RIGHT:   u32 = 107;
 pub const MENU_MIRROR_LEFT:  u32 = 105;
 pub const MENU_MIRROR_RIGHT: u32 = 106;
 

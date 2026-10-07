@@ -69,9 +69,9 @@ pub struct MasterShared {
     active: AtomicU8,
     /// 사용자가 단축키로 켜고 끔. false 면 어떤 상태 전환도 안 함.
     pub enabled: AtomicBool,
-    /// 쓸어넘기기 (마스터 화면 끝 → 슬레이브) 사용 여부.
+    /// 쓸어넘기기 (마스터 화면 끝 → 그 쪽 슬레이브) 사용 여부. Side::idx 로 인덱싱 (왼쪽/오른쪽 따로).
     /// 꺼도 슬레이브 → 마스터 복귀 (슬레이브 화면 끝) 는 항상 동작.
-    pub edge_enabled: AtomicBool,
+    pub edge_enabled: [AtomicBool; 2],
     /// Mirror 모드: 마스터 + 미러 대상 슬레이브 동시 조작. Local 상태에서만 켜짐.
     pub mirror: AtomicBool,
     /// 미러 대상 (Side::idx 로 인덱싱). 미러 off 중에도 유지 → 다음 미러 ON 때 그대로 사용.
@@ -86,7 +86,7 @@ impl MasterShared {
             state: AtomicU8::new(MasterState::Local as u8),
             active: AtomicU8::new(Side::Right as u8),
             enabled: AtomicBool::new(true),
-            edge_enabled: AtomicBool::new(true),
+            edge_enabled: [AtomicBool::new(true), AtomicBool::new(true)],
             mirror: AtomicBool::new(false),
             mirror_targets: [AtomicBool::new(true), AtomicBool::new(true)],
             connected: [AtomicBool::new(false), AtomicBool::new(false)],
@@ -109,6 +109,9 @@ impl MasterShared {
     }
     pub fn is_mirror_target(&self, s: Side) -> bool {
         self.mirror_targets[s.idx()].load(Ordering::Acquire)
+    }
+    pub fn is_edge_enabled(&self, s: Side) -> bool {
+        self.edge_enabled[s.idx()].load(Ordering::Acquire)
     }
 }
 
