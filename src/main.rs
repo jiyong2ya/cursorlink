@@ -42,6 +42,13 @@ fn main() -> Result<()> {
 
     #[cfg(windows)]
     {
+        // 자동 실행 등록은 항상 유지되므로, 자동 실행으로 켜졌는데 autostart = false 면 여기서 끝.
+        // (config 만 고치고 재부팅해도 바로 반영되게)
+        if autostart::launched_by_autostart() && !cfg.autostart {
+            tracing::info!("autostart = false → 자동 실행 건너뜀");
+            return Ok(());
+        }
+
         // run_as_admin: 관리자 권한이 아니면 관리자로 다시 실행하고 이 프로세스는 끝냄
         // (포트 열기 전이라 겹칠 일 없음). 확인창에서 "아니요" 면 일반 권한으로 계속.
         if cfg.run_as_admin && !autostart::is_elevated() {
@@ -56,8 +63,8 @@ fn main() -> Result<()> {
         let elevated = autostart::is_elevated();
         tracing::info!("관리자 권한: {}", if elevated { "예" } else { "아니요" });
 
-        // 자동시작 동기화 (autostart / run_as_admin 에 맞춰 레지스트리 or 작업 스케줄러)
-        autostart::sync(cfg.autostart, cfg.run_as_admin, elevated);
+        // 자동 실행 등록 유지 (run_as_admin 에 맞춰 레지스트리 or 작업 스케줄러)
+        autostart::sync(cfg.run_as_admin, elevated);
     }
 
     let r = match cfg.mode {

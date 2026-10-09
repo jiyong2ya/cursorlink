@@ -79,7 +79,7 @@ tcp_port = 46012
 # 비밀값. 모든 PC 가 글자 하나까지 똑같아야 연결됨 (16자 이상 권장)
 shared_secret = "change-me-to-random-string"
 
-# Windows 시작할 때 자동 실행 (true 권장)
+# Windows 시작할 때 자동 실행 (true 권장). 바꾸면 다음 부팅부터 바로 반영됨
 autostart = false
 
 # 관리자 권한으로 실행 (슬레이브는 true 권장)

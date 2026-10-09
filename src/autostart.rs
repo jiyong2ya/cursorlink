@@ -15,15 +15,24 @@ use windows::core::PCWSTR;
 use windows::Win32::System::Registry::*;
 use windows::Win32::Foundation::ERROR_SUCCESS;
 
-/// config 의 autostart / run_as_admin 에 맞춰 자동 실행 방식 정리.
-///   autostart + run_as_admin → 작업 스케줄러 (관리자 권한일 때 등록/갱신), HKCU\Run 은 지움
-///   autostart 만             → HKCU\Run (작업 스케줄러 작업이 있으면 지움)
-///   autostart 꺼짐           → 둘 다 지움
-/// 작업 등록이 안 되면 (관리자 권한 거절 등) HKCU\Run 으로라도 자동 시작.
-pub fn sync(autostart: bool, run_as_admin: bool, elevated: bool) {
-    let want_task = autostart && run_as_admin;
+/// 자동 실행으로 켜질 때 붙는 인자. 이 인자로 켜졌는데 config 의 autostart = false 면 바로 종료.
+pub const AUTOSTART_ARG: &str = "--autostart";
+
+/// 이번 실행이 Windows 자동 실행 (HKCU\Run / 작업 스케줄러) 으로 켜진 건지.
+pub fn launched_by_autostart() -> bool {
+    std::env::args().skip(1).any(|a| a == AUTOSTART_ARG)
+}
+
+/// 자동 실행 등록을 항상 유지. 실제로 켤지는 켜질 때 config 의 autostart 로 판단 (main.rs)
+/// → config 만 고치고 재부팅해도 바로 반영됨.
+/// (예전엔 autostart 값대로 등록/삭제를 cursorlink 가 켜질 때 해서, config 를 고친 뒤
+///  한 번 켜기 전까지는 반영이 안 돼 "true 인데 안 켜짐 / false 인데 켜짐" 이 생겼음)
+///   run_as_admin → 작업 스케줄러 (관리자 권한일 때 등록/갱신), 성공하면 HKCU\Run 은 지움
+///   아니면       → HKCU\Run (작업 스케줄러 작업이 있으면 지움)
+/// 작업 등록이 안 되면 (관리자 권한 거절 등) HKCU\Run 으로 대신.
+pub fn sync(run_as_admin: bool, elevated: bool) {
     let mut task_ok = false;
-    if want_task {
+    if run_as_admin {
         if elevated {
             match enable_admin_task() {
                 Ok(()) => task_ok = true,
@@ -39,22 +48,23 @@ pub fn sync(autostart: bool, run_as_admin: bool, elevated: bool) {
         }
     }
 
-    let use_run = autostart && !task_ok;
-    let is = is_enabled();
-    if use_run && !is {
-        if let Err(e) = enable() { tracing::warn!("autostart 활성화 실패: {}", e); }
-    } else if !use_run && is {
-        if let Err(e) = disable() { tracing::warn!("autostart 비활성화 실패: {}", e); }
+    if task_ok {
+        if is_enabled() {
+            if let Err(e) = disable() { tracing::warn!("autostart: 레지스트리 항목 삭제 실패: {}", e); }
+        }
+    } else if let Err(e) = enable() {
+        tracing::warn!("autostart 등록 실패: {}", e);
     }
 }
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const VALUE_NAME: &str = "cursorlink";
 
+/// HKCU\Run 에 "exe" --autostart 로 등록 (있으면 덮어씀 → 경로/인자 갱신).
 pub fn enable() -> Result<()> {
     let exe = std::env::current_exe().context("실행 파일 경로 조회 실패")?;
-    let exe_str = format!("\"{}\"", exe.display());
-    write_run_key(&exe_str)
+    let value = format!("\"{}\" {}", exe.display(), AUTOSTART_ARG);
+    write_run_key(&value)
 }
 
 pub fn disable() -> Result<()> {
@@ -112,7 +122,7 @@ fn write_run_key(exe: &str) -> Result<()> {
         );
         let _ = RegCloseKey(key);
         if r == ERROR_SUCCESS {
-            tracing::info!("autostart: 활성화 (경로={})", exe);
+            tracing::debug!("autostart: 레지스트리 등록 ({})", exe);
             Ok(())
         } else {
             anyhow::bail!("RegSetValueExW 실패: {:?}", r)
@@ -279,6 +289,7 @@ fn xml_escape(s: &str) -> String {
 /// highest = false 는 테스트용 (일반 권한으로 등록 검증할 때).
 pub(crate) fn task_xml(exe: &str, dir: &str, user: &str, highest: bool) -> String {
     let level = if highest { "HighestAvailable" } else { "LeastPrivilege" };
+    let arg = AUTOSTART_ARG;
     let exe = xml_escape(exe);
     let dir = xml_escape(dir);
     let user = xml_escape(user);
@@ -323,6 +334,7 @@ r#"<?xml version="1.0" encoding="UTF-16"?>
   <Actions Context="Author">
     <Exec>
       <Command>{exe}</Command>
+      <Arguments>{arg}</Arguments>
       <WorkingDirectory>{dir}</WorkingDirectory>
     </Exec>
   </Actions>
@@ -344,6 +356,7 @@ mod tests {
         assert!(x.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
         assert!(x.contains("<Priority>4</Priority>"));
         assert!(x.contains(r"<Command>C:\cursor &amp; link\cursorlink.exe</Command>"));
+        assert!(x.contains("<Arguments>--autostart</Arguments>"));
         assert!(x.contains(r"<UserId>PC\user</UserId>"));
     }
 

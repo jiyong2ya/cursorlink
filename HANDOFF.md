@@ -177,6 +177,11 @@ Active        ──RETURN_CONTROL (마스터)──▶ Idle
   2) 보안 데스크톱 (UAC 확인창, 잠금화면, Ctrl+Alt+Del) → 관리자 권한으로도 불가 (SYSTEM + Winlogon
      데스크톱 필요 = Input Director 등이 쓰는 서비스 방식). 지금은 watchdog 이 마스터로 자동 복귀만 함.
      실사용 우회: 슬레이브 UAC 를 "알리지 않음" + 화면 잠금 끄기.
+- **자동 실행:** 등록 (HKCU\Run 또는 작업 스케줄러) 은 항상 유지하고 `--autostart` 인자로 켜짐.
+  켜질 때 config 의 `autostart` 가 false 면 바로 종료 → config 만 고치고 재부팅해도 바로 반영.
+  (v0.2.4 까지는 cursorlink 가 켜질 때 등록/삭제해서, 고친 뒤 한 번 켜기 전까지 반영 안 됐음)
+- **슬레이브 IP 가 자꾸 바뀜:** `peer_ip` / `left_peer_ip` 에 IP 대신 Windows 컴퓨터 이름 (예: "MSI").
+  재접속마다 이름 → IPv4 로 다시 찾음. 이름 조회가 안 되면 슬레이브 네트워크를 "개인" 으로.
 - **노트북 덮개 닫기 / 절전:** TCP 는 이걸 바로 알려주지 않음. 양쪽 다 하트비트 (3초) 가 10초 (`tcp::PEER_TIMEOUT`) 동안
   안 오면 끊김 처리 → 그 슬레이브를 조작 중이었으면 마스터로 자동 복귀, 3초마다 재연결 시도.
 - **단축키 안 먹음:** 로그에 `RegisterHotKey ... 실패` → 다른 프로그램 (또는 cursorlink 가 두 번 실행) 이 같은 키 사용 중.

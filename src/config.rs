@@ -186,6 +186,20 @@ mod tests {
         assert!(!cfg.run_as_admin);
     }
 
+    /// 수동 검증용: CURSORLINK_CONFIG_CHECK 에 config.toml 경로를 주면 그 파일이 파싱되는지 확인.
+    /// 평소엔 아무것도 안 함.
+    #[test]
+    fn check_config_file_from_env() {
+        if let Ok(p) = std::env::var("CURSORLINK_CONFIG_CHECK") {
+            let text = std::fs::read_to_string(&p).expect("config 읽기 실패");
+            let cfg: Config = toml::from_str(&text).expect("config 파싱 실패");
+            println!(
+                "OK mode={:?} peer={} left={} mirror_left={} hotkey_mirror_left={}",
+                cfg.mode, cfg.peer_ip, cfg.left_peer_ip, cfg.mirror_left, cfg.hotkey_mirror_left
+            );
+        }
+    }
+
     #[test]
     fn minimal_slave_config_parses() {
         // 슬레이브는 공통 몇 줄만 있어도 됨 (나머지는 기본값).
